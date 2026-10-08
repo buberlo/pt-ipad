@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 
+from app_identity import DEFAULT_BUNDLE_ID, bundle_id
 from prepare_source import source_state
 from build_provenance import (MANIFEST_NAME, bundle_resources_hash, canonical_hash,
                               digest, tree_hash, verify_dependency)
@@ -58,14 +59,17 @@ def main(argv=None):
     parser.add_argument('--configure-only', action='store_true')
     parser.add_argument('--developer-dir', type=Path, default=Path('/Applications/Xcode.app/Contents/Developer'))
     parser.add_argument('--minimum-os', help='default macOS 14.0 or iOS 18.0')
+    parser.add_argument('--bundle-id', type=bundle_id, default=DEFAULT_BUNDLE_ID)
     parser.add_argument('--build-number', type=int, default=6)
     parser.add_argument('--host-glslc', type=Path)
     parser.add_argument('--voice-dir', type=Path)
     parser.add_argument('--moltenvk-root', type=Path,
-                        default=ROOT.parent / 'anyps5-ipad/upstreams/MoltenVK')
+                        default=None)
     parser.add_argument('--moltenvk-library', type=Path)
     parser.add_argument('--moltenvk-include', type=Path)
     args = parser.parse_args(argv)
+    if args.platform == 'ios' and args.moltenvk_root is None:
+        parser.error('iOS requires an explicit --moltenvk-root with the pinned local driver')
     if args.build_number < 1:
         parser.error('--build-number must be positive')
     if args.tests and args.platform != 'macos':
@@ -106,11 +110,11 @@ def main(argv=None):
     cmake = ['cmake', '-S', args.source.resolve(), '-B', build, '-G', 'Ninja',
              '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_OSX_ARCHITECTURES=arm64',
              f'-DCMAKE_OSX_DEPLOYMENT_TARGET={minimum}', f'-DFETCHCONTENT_BASE_DIR={deps}',
-             f'-DPT_APP_BUILD={args.build_number}',
+             f'-DPT_APP_BUILD={args.build_number}', f'-DPT_BUNDLE_IDENTIFIER={args.bundle_id}',
              f'-DPT_HOST_GLSLC={glslc.resolve()}', f'-DPT_VOICE_DIR={voice.resolve()}']
     for option in ('UPSCALERS', 'STREAMLINE', 'OPENXR', 'ENHANCED_TEXTURES', 'GAMEPLUS', 'NETWORK_UPDATES'):
         cmake.append(f'-DPT_{option}=OFF')
-    manifest = {'schema': 1, 'status': 'preparing', 'platform': args.platform, 'source_commit': lock['pt_pc']['commit'],
+    manifest = {'schema': 2, 'bundle_id': args.bundle_id, 'status': 'preparing', 'platform': args.platform, 'source_commit': lock['pt_pc']['commit'],
                 'application_build': args.build_number,
                 'source_tree_sha256': source_state(args.source),
                 'developer_dir': str(args.developer_dir), 'minimum_os': minimum,
@@ -162,6 +166,14 @@ def main(argv=None):
         # This records the inspected source and artifact separately. It does not claim the
         # pre-existing archive was rebuilt from that checkout during this invocation.
         manifest['moltenvk_rebuilt_here'] = False
+        driver_receipt = root / 'Package/Release/pt-driver-build.json'
+        if driver_receipt.is_file():
+            proof = json.loads(driver_receipt.read_text())
+            if (proof.get('source_commit') != commit or proof.get('archive_sha256') != manifest['moltenvk_archive_sha256'] or
+                    proof.get('driver_compiled_here') is not True):
+                parser.error('driver rebuild receipt does not match selected archive and source')
+            manifest['moltenvk_independent_build_receipt'] = proof
+            manifest['moltenvk_build_receipt_sha256'] = digest(driver_receipt)
     else:
         if args.moltenvk_library:
             cmake.append(f'-DPT_MOLTENVK_LIBRARY={args.moltenvk_library.resolve()}')
@@ -205,6 +217,8 @@ def main(argv=None):
     resources = app if args.platform == 'ios' else app / 'Contents/Resources'
     info_path = app / ('Info.plist' if args.platform == 'ios' else 'Contents/Info.plist')
     info = plistlib.loads(info_path.read_bytes())
+    if info['CFBundleIdentifier'] != args.bundle_id:
+        parser.error('built Info.plist does not match the requested bundle ID')
     relative_executable = info['CFBundleExecutable'] if args.platform == 'ios' else f"Contents/MacOS/{info['CFBundleExecutable']}"
     manifest['unsigned_executable_sha256'] = digest(app / relative_executable)
     manifest['runtime_links_observed'] = capture(['otool', '-L', str(app / relative_executable)], env=env).splitlines()[1:]

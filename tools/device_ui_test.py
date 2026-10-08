@@ -19,6 +19,8 @@ import subprocess
 import sys
 import time
 
+from app_identity import test_bundle_ids
+from device_config import add_options, configure, supervisor_options
 from device_walkthrough import (BUNDLE, Capture, DEVELOPER, WalkthroughError,
                                 copied_destination, local_device_path, owned_process, utc_now)
 
@@ -314,6 +316,8 @@ class UiCapture(Capture):
             staged = True
             config = resolve_testroot(configuration, self.args.xctestrun.parent.resolve())
             target = config["PTDeviceTests"]
+            target.setdefault("EnvironmentVariables", {})["PT_TEST_BUNDLE_ID"] = BUNDLE
+            target.setdefault("TestingEnvironmentVariables", {})["PT_TEST_BUNDLE_ID"] = BUNDLE
             target.setdefault("EnvironmentVariables", {})["PT_TEST_SESSION"] = str(device_dir)
             target.setdefault("TestingEnvironmentVariables", {})["PT_TEST_SESSION"] = str(device_dir)
             target["TestTimeoutsEnabled"] = True
@@ -396,7 +400,17 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new private report directory")
     parser.add_argument("--seconds", type=int, default=240, help="one XCTest run timeout, 180..600 seconds")
     parser.add_argument("--under-lease", action="store_true", help=argparse.SUPPRESS)
+    add_options(parser)
     args = parser.parse_args(argv)
+    configure(args)
+    global BUNDLE, HARNESS, RUNNER, EXECUTABLES, APP_NAMES, DEVELOPER, XCODEBUILD, XCRESULT
+    BUNDLE = args.bundle_id
+    HARNESS, RUNNER = test_bundle_ids(BUNDLE)
+    EXECUTABLES = {BUNDLE: 'pt', HARNESS: 'PTHarness', RUNNER: 'PTDeviceTests-Runner'}
+    APP_NAMES = {BUNDLE: 'pt.app', HARNESS: 'PTHarness.app', RUNNER: 'PTDeviceTests-Runner.app'}
+    DEVELOPER = str(args.developer_dir.resolve())
+    XCODEBUILD = str(args.developer_dir.resolve() / 'usr/bin/xcodebuild')
+    XCRESULT = str(args.developer_dir.resolve() / 'usr/bin/xcresulttool')
     if not args.device.strip() or not 180 <= args.seconds <= 600:
         parser.error("an explicit device and timeout from180 to600 seconds are required")
     if args.output.exists() or args.output.is_symlink():
@@ -406,7 +420,7 @@ def main(argv=None):
     prepare_products(args.xctestrun, args.app)
     if not args.under_lease:
         values = list(sys.argv[1:] if argv is None else argv)
-        return subprocess.call([sys.executable, str(ROOT / "tools/ipad_command.py"), "--minutes", str(args.seconds / 60 + 5),
+        return subprocess.call([sys.executable, str(ROOT / "tools/ipad_command.py"), *supervisor_options(args), "--minutes", str(args.seconds / 60 + 5),
                                 "--require-cleanup-receipt", str(args.output / "cleanup.json"), "--",
                                 sys.executable, str(Path(__file__).resolve()), *values, "--under-lease"])
     capture = UiCapture(args)

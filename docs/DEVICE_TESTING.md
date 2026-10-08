@@ -2,7 +2,7 @@
 
 The local test tools use a shared-device coordinator to prevent concurrent installations and measurements. Every device operation in this workspace must hold the `pt-native` command lease for this chat. Another owner, a paused record, or an unconfirmed earlier cleanup blocks a new operation; expired timestamps do not grant takeover permission. Other queued work remains in the record. This coordination policy is separate from the game's C++ runtime and is not an application dependency.
 
-Configure the record through `PT_IPAD_LEASE_RECORD` or `tools/ipad_command.py --record /absolute/path/ipad-access.json`; select the locally installed compatible coordinator through `--lease-wrapper /absolute/path/with-ipad-lease.py`. Historical default paths refer to the original development workspace. The public repository does not include that external coordinator, so an independent checkout must configure it before using these guarded capture helpers. Normal Xcode installation of the native application is independent of these test helpers; follow the applicable device-access policy before any physical-device action.
+The coordinator is included in `tools/device_lease.py`. Configure `--lease-record`, `--device`, and `--session-id`; all capture helpers also accept `--bundle-id` and `--developer-dir`. The existing shared record is mandatory in this workspace. For an independently owned device, explicitly create a new record using `ipad_command.py --record /absolute/private/device.json --device DEVICE --create-record`. A missing configured shared record never falls back to unguarded access. No external application repository is required.
 
 ## Build, sign and install
 
@@ -26,12 +26,12 @@ Launch helpers require a cleanup receipt carrying their lease token. The reserva
 ```sh
 python3 tools/device_walkthrough.py --device "$PT_DEVICE" \
   --output reports-private/device-walkthrough-new-build --seconds 1500 \
-  --app artifacts/PT-Native-build4/pt.app
+  --app artifacts/PT-build7/pt.app
 ```
 
 The helper uses the pinned full walkthrough at normal demo speed, original assets, seed 1 and a foreground window. Source-generated route files, fresh settings/logs and presentation CSV live in a unique private device session directory. The route includes an injected voice result; this is not live microphone or physical-controller acceptance. Screenshots and milestone/error logs must be reviewed alongside the trace.
 
-The foreground preface reuses upstream `speedrun_boot.txt` to dismiss the real first-boot options menu with a scripted Escape key. It then waits for the menu to close and controller step 15 before the unchanged `FULL` route begins. The source hashes and preface are recorded separately. The helper checks startup logs at 30, 60 and 90 seconds and stops if `StartGame` is absent at 90 seconds; display timing on the options menu cannot qualify as gameplay.
+The route explicitly launches with `--options-menu` to reproduce the pinned boot route; normal user startup skips that menu while retaining the original intro. The foreground preface reuses upstream `speedrun_boot.txt` to dismiss the real first-boot options menu with a scripted Escape key. It then waits for the menu to close and controller step 15 before the unchanged `FULL` route begins. The source hashes and preface are recorded separately. The helper checks startup logs at 30, 60 and 90 seconds and stops if `StartGame` is absent at 90 seconds; display timing on the options menu cannot qualify as gameplay.
 
 From patch `0012`, route screenshots use the original internal render size (1920×1080 on this iPad configuration), including the original game UI and final grain/brightness. They exclude the display's letterbox bars and native touch overlay. Periodic device screenshots retain the full display. The capture fix passed a real, asset-free Mac GPU regression; its iPad capture path still needs verification in the resulting installed build. Preserve older failed screenshot records.
 
@@ -63,3 +63,5 @@ This performs one bounded test attempt. Before installation it rejects existing 
 Success requires the exact `PTDeviceTests/NativeInputTests/testTouchAndResume` test to execute and pass, plus fresh application logs from its isolated session. The input script only logs state: postanalysis requires gameplay samples at controller step 15 on f010, a yaw change of at least 0.15 radians, horizontal movement of at least 0.25 metres, and pause-close/background-resume events. Opening-demo motion and app foreground state alone do not pass. These checks support look/move and lifecycle evidence; screenshot review, interact/zoom behavior, held-input reset and wider control acceptance remain separate. A preflight refusal before installation is not another XCTest bootstrap attempt.
 
 Final acceptance also requires controller input/disconnects, live microphone permission and recognition, audio interruptions, saves, complete ending, original-reference visual comparisons, and a reboot/offline launch with development tools disconnected. Keep built, signed, installed, launched, playable and accepted states separate in [STATUS.md](STATUS.md).
+
+Custom XCTest products must be built with `PT_HARNESS_BUNDLE_ID=<app-bundle-id>.harness` (default remains `com.konradkern.pt.harness`). The runner must be `<harness>.tests.xctrunner`. Pass the same `--bundle-id` to the UI helper; it validates all products and supplies `PT_TEST_BUNDLE_ID` to the Swift test process.

@@ -4,6 +4,7 @@ options:
     iOS: "18.0"
 settings:
   base:
+    PT_HARNESS_BUNDLE_ID: com.konradkern.pt.harness
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "2"
     GENERATE_INFOPLIST_FILE: YES
@@ -15,7 +16,7 @@ targets:
     sources: [PTHarness]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.konradkern.pt.harness
+        PRODUCT_BUNDLE_IDENTIFIER: $(PT_HARNESS_BUNDLE_ID)
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
   PTDeviceTests:
     type: bundle.ui-testing
@@ -25,7 +26,7 @@ targets:
       - target: PTHarness
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.konradkern.pt.harness.tests
+        PRODUCT_BUNDLE_IDENTIFIER: $(PT_HARNESS_BUNDLE_ID).tests
         TEST_TARGET_NAME: PTHarness
 schemes:
   PTDeviceChecks:

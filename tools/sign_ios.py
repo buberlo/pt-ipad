@@ -14,6 +14,7 @@ import sys
 import tempfile
 import zipfile
 
+from app_identity import DEFAULT_BUNDLE_ID, bundle_id
 from build_provenance import MANIFEST_NAME, verify_bundle_manifest
 
 
@@ -35,7 +36,7 @@ def absent(path):
         raise ValueError(f"output already exists; choose a new path: {path}")
 
 
-def inspect_bundle(app):
+def inspect_bundle(app, expected_bundle=DEFAULT_BUNDLE_ID):
     if app.is_symlink() or not app.is_dir():
         raise ValueError("input must be a real application directory")
     for parent, directories, files in os.walk(app, followlinks=False):
@@ -45,7 +46,7 @@ def inspect_bundle(app):
             if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise ValueError(f"unexpected symlink or special file in static application bundle: {path}")
     info = plistlib.loads((app / "Info.plist").read_bytes())
-    if info["CFBundleIdentifier"] != "com.konradkern.pt.native":
+    if info["CFBundleIdentifier"] != bundle_id(expected_bundle):
         raise ValueError("refusing to sign an unrelated bundle")
     executable = info["CFBundleExecutable"]
     if not isinstance(executable, str) or executable in ("", ".", "..") or Path(executable).name != executable:
@@ -56,9 +57,9 @@ def inspect_bundle(app):
     return info
 
 
-def sign(app, profile_path, identity, output):
+def sign(app, profile_path, identity, output, expected_bundle=DEFAULT_BUNDLE_ID):
     # All bundle shape checks precede even copying the profile; the input remains read-only.
-    info = inspect_bundle(app)
+    info = inspect_bundle(app, expected_bundle)
     app = app.resolve()
     build_manifest, build_manifest_sha256 = verify_bundle_manifest(app, info)
     bundle = info["CFBundleIdentifier"]
@@ -112,7 +113,7 @@ def sign(app, profile_path, identity, output):
         stage = Path(directory)
         staged_app = stage / "pt.app"
         shutil.copytree(app, staged_app, symlinks=True)
-        if inspect_bundle(staged_app) != info:
+        if inspect_bundle(staged_app, expected_bundle) != info:
             raise ValueError("application metadata changed during copying")
         copied_manifest, copied_manifest_sha256 = verify_bundle_manifest(staged_app, info)
         if copied_manifest_sha256 != build_manifest_sha256 or copied_manifest != build_manifest:
@@ -185,12 +186,13 @@ def sign(app, profile_path, identity, output):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bundle-id", type=bundle_id, default=DEFAULT_BUNDLE_ID)
     parser.add_argument("--app", required=True, type=Path)
     parser.add_argument("--profile", required=True, type=Path)
     parser.add_argument("--identity", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        sign(args.app, args.profile, args.identity, args.output)
+        sign(args.app, args.profile, args.identity, args.output, args.bundle_id)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Signing failed: {error}\n")

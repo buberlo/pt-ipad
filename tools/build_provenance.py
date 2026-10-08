@@ -7,6 +7,8 @@ import re
 import stat
 import subprocess
 
+from app_identity import DEFAULT_BUNDLE_ID
+
 MANIFEST_NAME = "pt-build-manifest.json"
 
 
@@ -80,10 +82,13 @@ def verify_bundle_manifest(app, info):
     app = Path(app)
     manifest_path = app / MANIFEST_NAME
     manifest = json.loads(manifest_path.read_text())
-    if (manifest.get("schema") != 1 or manifest.get("status") != "built" or
+    if (manifest.get("schema") not in (1, 2) or manifest.get("status") != "built" or
             manifest.get("platform") != "ios" or
             str(manifest.get("application_build")) != info["CFBundleVersion"]):
         raise ValueError("build manifest does not identify this completed iOS application")
+    if (manifest.get("schema") == 1 and info["CFBundleIdentifier"] != DEFAULT_BUNDLE_ID or
+            manifest.get("schema") == 2 and manifest.get("bundle_id") != info["CFBundleIdentifier"]):
+        raise ValueError("build manifest bundle ID does not match application metadata")
     if not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("source_commit", ""))):
         raise ValueError("build manifest has no valid upstream source commit")
     for key in ("source_tree_sha256", "dependency_lock_sha256", "dependency_inputs_sha256",

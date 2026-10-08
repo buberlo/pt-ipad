@@ -7,10 +7,9 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-GUARD = ROOT.parent / "anyps5-ipad/scripts/with-ipad-lease.py"
+GUARD = ROOT / "tools/device_lease.py"
 
 
-@unittest.skipUnless(GUARD.is_file(), "external shared-device guard is unavailable")
 class CleanupLeaseTests(unittest.TestCase):
     def exercise(self, code, minutes="0.1"):
         with tempfile.TemporaryDirectory() as directory:
@@ -18,9 +17,9 @@ class CleanupLeaseTests(unittest.TestCase):
             record = root / "record.json"
             receipt = root / "cleanup.json"
             queue = [{"owner": "other-project", "phase": "preserve"}]
-            record.write_text(json.dumps({"owner": None, "allowedOwners": ["pt-native"], "nextRequestedPhases": queue}))
+            record.write_text(json.dumps({"owner": None, "deviceUDID": "fixture-device", "allowedOwners": ["pt-native"], "nextRequestedPhases": queue}))
             result = subprocess.run([sys.executable, str(ROOT / "tools/ipad_command.py"),
-                "--record", str(record), "--lease-wrapper", str(GUARD), "--thread-id", "local-test",
+                "--record", str(record), "--device", "fixture-device", "--thread-id", "local-test",
                 "--minutes", minutes, "--require-cleanup-receipt", str(receipt), "--",
                 sys.executable, "-c", code, str(receipt)], capture_output=True, text=True, timeout=10)
             state = json.loads(record.read_text())

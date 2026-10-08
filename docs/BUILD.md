@@ -28,7 +28,7 @@ The inspected iOS source commit is `fae55a18779ee59da2cc5373a367a0282779c171`. T
 ```sh
 git submodule update --init upstream/pt-pc
 python3 tools/prepare_source.py
-python3 -m unittest discover -s tests -p 'test_*.py'
+python3 tools/validate_local.py --python-only
 ```
 
 Preparation verifies the upstream commit and patch order, writes ignored `build/port-src`, and refuses to overwrite an altered or unmarked checkout. Reusing an exactly matching generated checkout is safe. To rebuild a changed patch recipe, choose a fresh source directory instead of deleting active work.
@@ -42,7 +42,7 @@ python3 tools/build_native.py macos --tests
 python3 tools/build_native.py ios --moltenvk-root /absolute/local/path/MoltenVK
 ```
 
-`--prepare-source` explicitly requests safe source preparation before configuring. `--source`, `--build-dir`, `--developer-dir`, `--host-glslc`, `--voice-dir`, `--moltenvk-root`, `--moltenvk-library` and `--moltenvk-include` select local inputs. `--configure-only` stops before compilation. Use one build at a time with the shared dependency cache.
+`--bundle-id org.example.pt` selects your own app identity; pass the same value to signing and device tools. iOS requires an explicit `--moltenvk-root`. `--prepare-source` explicitly requests safe source preparation before configuring. `--source`, `--build-dir`, `--developer-dir`, `--host-glslc`, `--voice-dir`, `--moltenvk-root`, `--moltenvk-library` and `--moltenvk-include` select local inputs. `--configure-only` stops before compilation. Use one build at a time with the shared dependency cache.
 
 The wrapper generates Ninja Release builds for ARM64, with deployment targets macOS 14.0 or iOS 18.0. Host `glslc` compiles Vulkan 1.3 SPIR-V. iOS links its own MoltenVK archive and headers; desktop libraries are never used as the iOS driver. Source dependencies and voice models are reused while macOS and iOS have separate dependency binary directories. Desktop upscalers, Streamline, OpenXR, the external enhanced-texture executable, Game+ and update checks are disabled.
 
@@ -75,3 +75,7 @@ The signer preserves its input bundle. It signs a private copy, verifies its ent
 ## Private data
 
 Keep the source package in its original location. The host importer installs into ignored `assets-private/CUSA01127` and records private input paths in ignored reports. Device game data goes in the application's Documents/CUSA01127 directory; saves remain separate. Never add the game data to a Git commit or release.
+
+## Combined local gate
+
+After building macOS with `--tests`, run `python3 tools/validate_local.py`. Add `--assets /absolute/private/CUSA01127` to explicitly run the native original-assets input/startup integration checks. GPU access is required for the Metal probe. Missing native binaries or a source/build mismatch fail the gate. `--python-only` checks repository/Python tooling only. See [REBUILD.md](REBUILD.md) for the continuous independent-developer workflow.

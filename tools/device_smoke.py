@@ -12,6 +12,7 @@ import tempfile
 import time
 import uuid
 from urllib.parse import unquote, urlparse
+from device_config import add_options, configure, supervisor_options
 from device_walkthrough import copied_destination, lease_identity, read_lease, running_processes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,24 +66,30 @@ def main():
     p.add_argument("--seconds", type=int, default=45, choices=range(10, 181))
     p.add_argument("--natural-startup", action="store_true", help="test fresh startup and original intro without forcing a floor")
     p.add_argument("--under-lease", action="store_true", help=argparse.SUPPRESS)
+    add_options(p)
     args = p.parse_args()
+    configure(args)
+    global BUNDLE
+    BUNDLE = args.bundle_id
     args.output = args.output.absolute()
     receipt = args.output / "cleanup.json"
     if not args.under_lease:
         minutes = str(max(6, math.ceil((args.seconds + 300) / 60)))
-        return subprocess.call([sys.executable, str(ROOT / "tools/ipad_command.py"), "--minutes", minutes,
+        return subprocess.call([sys.executable, str(ROOT / "tools/ipad_command.py"), *supervisor_options(args), "--minutes", minutes,
                                 "--require-cleanup-receipt", str(receipt), "--",
                                 sys.executable, str(Path(__file__).resolve()), *sys.argv[1:], "--under-lease"])
     record = Path(os.environ.get("PT_IPAD_LEASE_RECORD", str(ROOT.parent / "madeira/installation/ipad-access.json")))
     thread, parent = os.environ.get("CODEX_THREAD_ID"), os.getppid()
     identity, deadline = lease_identity(read_lease(record), thread, parent)
     lease = read_lease(record)
+    if lease.get("deviceUDID") != args.device:
+        raise RuntimeError("requested device differs from lease record")
     token = os.environ.get("PT_DEVICE_LEASE_TOKEN")
     if (lease.get("owner") != "pt-native" or lease.get("threadId") != os.environ.get("CODEX_THREAD_ID") or
             not token or lease.get("commandLease", {}).get("token") != token):
         raise RuntimeError("a live PT command lease with a cleanup token is required")
     args.output.mkdir(parents=True, exist_ok=False)
-    env = dict(os.environ, DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer")
+    env = dict(os.environ, DEVELOPER_DIR=str(args.developer_dir.resolve()))
 
     def command(name, operation, extra=(), timeout=20, check=True, teardown=False):
         current, current_deadline = lease_identity(read_lease(record), thread, parent, teardown=teardown)

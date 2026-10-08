@@ -51,3 +51,5 @@ See [local build and signing instructions](docs/BUILD.md) for Xcode, native depe
 The upstream `pt-pc` source and this project's own adaptations are MIT-licensed; see [LICENSE](LICENSE). Dependency licenses and exact provenance are retained in [THIRD_PARTY.md](THIRD_PARTY.md) and the corresponding notices. That source license does not grant rights to the original game assets.
 
 P.T. and its original content belong to their respective rights holders. This project is not affiliated with Konami or Kojima Productions and redistributes no original game data.
+
+For the complete checkout-to-device workflow, see [independent rebuild](docs/REBUILD.md). The next source-only release is tracked in the [alpha milestone](https://github.com/buberlo/pt-ipad/milestone/1), with explicit [acceptance gates](docs/ALPHA_ACCEPTANCE.md).

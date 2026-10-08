@@ -1,7 +1,7 @@
 import XCTest
 
 final class NativeInputTests: XCTestCase {
-    private let game = XCUIApplication(bundleIdentifier: "com.konradkern.pt.native")
+    private let game = XCUIApplication(bundleIdentifier: ProcessInfo.processInfo.environment["PT_TEST_BUNDLE_ID"] ?? "com.konradkern.pt.native")
 
     override func setUpWithError() throws {
         continueAfterFailure = false

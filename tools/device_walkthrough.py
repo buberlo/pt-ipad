@@ -26,6 +26,7 @@ from urllib.parse import unquote, urlsplit
 import uuid
 import wave
 
+from device_config import add_options, configure, supervisor_options
 from summarize_present_trace import summarize, TraceError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -341,6 +342,8 @@ class Capture:
         self.args = args
         self.record = Path(os.environ.get("PT_IPAD_LEASE_RECORD", str(ROOT.parent / "madeira/installation/ipad-access.json")))
         self.thread, self.parent = os.environ.get("CODEX_THREAD_ID"), os.getppid()
+        if read_lease(self.record).get("deviceUDID") != args.device:
+            raise WalkthroughError("requested device differs from lease record")
         self.identity, self.deadline = lease_identity(read_lease(self.record), self.thread, self.parent)
         self.receipt_token = os.environ.get("PT_DEVICE_LEASE_TOKEN")
         if not self.receipt_token or self.receipt_token != self.identity[0]:
@@ -663,7 +666,12 @@ def main(argv=None):
     parser.add_argument("--app", type=Path, help="optional already-signed .app to install while holding this lease")
     parser.add_argument("--voice-input", type=Path, help="optional local 16 kHz mono PCM16 WAV; marked prerecorded, never microphone acceptance")
     parser.add_argument("--under-lease", action="store_true", help=argparse.SUPPRESS)
+    add_options(parser)
     args = parser.parse_args(argv)
+    configure(args)
+    global BUNDLE, DEVELOPER, DEVICECTL
+    BUNDLE, DEVELOPER = args.bundle_id, str(args.developer_dir.resolve())
+    DEVICECTL = str(args.developer_dir.resolve() / "usr/bin/devicectl")
     if not args.device.strip() or not 1200 <= args.seconds <= 1800:
         parser.error("an explicit device and duration from 1200 to 1800 seconds are required")
     if args.output.exists():
@@ -679,7 +687,7 @@ def main(argv=None):
     if not args.under_lease:
         values = list(sys.argv[1:] if argv is None else argv)
         minutes = args.seconds / 60 + 5
-        return subprocess.call([sys.executable, str(ROOT / "tools/ipad_command.py"), "--minutes", str(minutes),
+        return subprocess.call([sys.executable, str(ROOT / "tools/ipad_command.py"), *supervisor_options(args), "--minutes", str(minutes),
                                 "--require-cleanup-receipt", str(args.output / "cleanup.json"), "--",
                                 sys.executable, str(Path(__file__).resolve()), *values, "--under-lease"])
     capture = Capture(args)
