@@ -309,8 +309,8 @@ def route_stop_reason(observed):
     return None
 
 
-def trace_evidence(path):
-    report = summarize(path, target_fps=30, warmup_seconds=30, window_seconds=60)
+def trace_evidence(path, target_fps=30):
+    report = summarize(path, target_fps=target_fps, warmup_seconds=30, window_seconds=60)
     longest = max((segment["observed_interval_seconds"] for segment in report["segments"]), default=0)
     return {"summary": report, "longest_retained_segment_seconds": longest,
             "has_20_minute_contiguous_actual_intervals": longest >= 1200 and not report["trace_discontinuity"],
@@ -535,11 +535,13 @@ class Capture:
             self.before_pids = {row["processIdentifier"] for row in before_launch}
             if any(pt_executable(row.get("executable")) for row in before_launch):
                 raise WalkthroughError("PT started during staging; preserving that session")
-            child_env = {"PT_PRESENT_TRACE_PATH": str(device_dir / "present.csv"), "PT_SYSTEM_LANGUAGE": "en-US", "PT_LOG_TICKS": "1"}
+            child_env = {"PT_PRESENT_TRACE_PATH": str(device_dir / "present.csv"), "PT_SYSTEM_LANGUAGE": "en-US"}
+            if self.args.profile:
+                child_env.update(PT_TICK_CSV=str(device_dir / "tick.csv"), PT_GPU_LIVE_CSV=str(device_dir / "gpu.csv"))
             if self.args.voice_input:
                 child_env["PT_VOICE_INPUT"] = str(device_dir / "voice-input.wav")
             # The pinned route explicitly exercises first-boot settings. Normal iPad launches skip them.
-            arguments = ["--no-save", "--no-mods", "--options-menu", "--seed", "1", "--demo-rate", "1", "--input-script", str(device_route),
+            arguments = ["--fps-limit", str(self.args.fps_limit), "--no-save", "--no-mods", "--options-menu", "--seed", "1", "--demo-rate", "1", "--input-script", str(device_route),
                          "--log", str(device_dir / "pt.log"), "--settings", str(device_dir / "session.ini")]
             self.report["launch_arguments"] = arguments
             self.report["launch_environment"] = child_env
@@ -608,7 +610,7 @@ class Capture:
             self.persist()
             if staged and not self.cancelled:
                 # Stop the exact owned process before spending the remaining lease on copies.
-                for name in ("pt.log", "present.csv", "shots"):
+                for name in ("pt.log", "present.csv", "shots", *(("tick.csv", "gpu.csv") if self.args.profile else ())):
                     try:
                         self.copy_from("collect-" + name.replace(".", "-"), self.relative / name,
                                        self.args.output / name, cleanup=True, timeout=25)
@@ -629,7 +631,7 @@ class Capture:
         trace = self.args.output / "present.csv"
         if trace.is_file():
             try:
-                evidence = trace_evidence(trace)
+                evidence = trace_evidence(trace, self.args.fps_limit)
                 (self.args.output / "presentation-summary.json").write_text(json.dumps(evidence, indent=2) + "\n")
                 self.report["timing"] = {key: value for key, value in evidence.items() if key != "summary"}
                 # Log clocks and driver actualPresentTime have no established common
@@ -660,9 +662,11 @@ class Capture:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fps-limit", type=int, choices=(30, 60), default=30)
+    parser.add_argument("--profile", action="store_true", help="enable diagnostic CPU/GPU CSVs; omit for final acceptance")
     parser.add_argument("--device", required=True, help="explicit device identifier; no implicit device selection")
     parser.add_argument("--output", required=True, type=Path, help="new private local report directory")
-    parser.add_argument("--seconds", type=int, default=1500, metavar="1200..1800")
+    parser.add_argument("--seconds", type=int, default=1500, metavar="1200..1800 (profile: 120..1800)")
     parser.add_argument("--app", type=Path, help="optional already-signed .app to install while holding this lease")
     parser.add_argument("--voice-input", type=Path, help="optional local 16 kHz mono PCM16 WAV; marked prerecorded, never microphone acceptance")
     parser.add_argument("--under-lease", action="store_true", help=argparse.SUPPRESS)
@@ -672,8 +676,8 @@ def main(argv=None):
     global BUNDLE, DEVELOPER, DEVICECTL
     BUNDLE, DEVELOPER = args.bundle_id, str(args.developer_dir.resolve())
     DEVICECTL = str(args.developer_dir.resolve() / "usr/bin/devicectl")
-    if not args.device.strip() or not 1200 <= args.seconds <= 1800:
-        parser.error("an explicit device and duration from 1200 to 1800 seconds are required")
+    if not args.device.strip() or not (120 if args.profile else 1200) <= args.seconds <= 1800:
+        parser.error("an explicit device and 1200..1800 seconds are required (profiling permits 120..1800)")
     if args.output.exists():
         parser.error("--output must be a new directory")
     args.output = args.output.absolute()

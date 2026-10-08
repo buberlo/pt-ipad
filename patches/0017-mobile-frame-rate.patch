@@ -1,0 +1,221 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7b0dcb8..34e5801 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -326,6 +326,15 @@ target_link_libraries(pt_mods_test PRIVATE pt_engine)
+ add_executable(pt_script_api_test tests/script_api_test.cpp)
+ target_link_libraries(pt_script_api_test PRIVATE pt_engine)
+ 
++add_executable(pt_mobile_frame_mode_test tests/mobile_frame_mode_test.cpp)
++target_include_directories(pt_mobile_frame_mode_test PRIVATE src)
++target_link_libraries(pt_mobile_frame_mode_test PRIVATE pt_engine)
++if(MSVC)
++  target_compile_options(pt_mobile_frame_mode_test PRIVATE /UNDEBUG)
++else()
++  target_compile_options(pt_mobile_frame_mode_test PRIVATE -UNDEBUG)
++endif()
++
+ add_executable(pt_ipad_input_test tests/ipad_input_test.cpp)
+ target_link_libraries(pt_ipad_input_test PRIVATE pt_engine)
+ 
+@@ -358,7 +367,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+     add_test(NAME pt_asset_install_test COMMAND pt_asset_install_test)
+     set_tests_properties(pt_asset_install_test PROPERTIES LABELS "asset-free")
+   endif()
+-  foreach(test pt_tests pt_voice_match_test pt_graphics_preset_test pt_blur_sway_test pt_descriptor_budget_test pt_ipad_input_test pt_script_api_test)
++  foreach(test pt_mobile_frame_mode_test pt_tests pt_voice_match_test pt_graphics_preset_test pt_blur_sway_test pt_descriptor_budget_test pt_ipad_input_test pt_script_api_test)
+     add_test(NAME ${test} COMMAND ${test})
+     set_tests_properties(${test} PROPERTIES LABELS "asset-free")
+   endforeach()
+diff --git a/src/engine/platform/frame_mode.h b/src/engine/platform/frame_mode.h
+new file mode 100644
+index 0000000..1057246
+--- /dev/null
++++ b/src/engine/platform/frame_mode.h
+@@ -0,0 +1,12 @@
++#pragma once
++#include <string_view>
++
++namespace pt {
++constexpr int ParseComparisonFrameLimit(std::string_view value) {
++    return value == "30" ? 30 : value == "60" ? 60 : 0;
++}
++constexpr int MobileFrameLimit(int saved) { return saved == 60 ? 60 : 30; }
++constexpr int EffectiveFrameLimit(int saved, int comparison_override) {
++    return comparison_override ? comparison_override : saved;
++}
++}
+diff --git a/src/engine/platform/settings.h b/src/engine/platform/settings.h
+index 04f9e34..ca7a34e 100644
+--- a/src/engine/platform/settings.h
++++ b/src/engine/platform/settings.h
+@@ -15,7 +15,11 @@ struct AppSettings {
+         bool vsync = true;
+         bool pause_on_focus_loss = true;
+         bool mute_in_background = false;
++#if PT_IOS
++        int fps_limit = 30;
++#else
+         int fps_limit = 0;
++#endif
+         int letterbox = 0;
+     } display;
+     struct Input {
+diff --git a/src/game/ui/pc_settings.cpp b/src/game/ui/pc_settings.cpp
+index 2713382..42d8b01 100644
+--- a/src/game/ui/pc_settings.cpp
++++ b/src/game/ui/pc_settings.cpp
+@@ -16,6 +16,9 @@ struct Entry {
+ };
+ 
+ constexpr Entry kTexts[] = {
++    {"pc_frame_limit", {"Frame rate"}},
++    {"pc_note_frame_limit", {"Choose 30 or 60 frames per second. Game speed and image quality stay the same."}},
++    {"pc_note_frame_limit_fixed", {"Frame rate is fixed for this run. Restart normally to change it."}},
+     {"pc_loop_browser", {"Loop Browser"}},
+     {"pc_note_loop_browser_entry", {"Start any loop without replacing your save."}},
+     {"pc_loop_choose", {"Choose a loop"}},
+diff --git a/src/main.cpp b/src/main.cpp
+index 266b8b2..d8865c6 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -4,6 +4,7 @@
+ #endif
+ #include <SDL3/SDL_main.h>
+ #include "engine/platform/update_check.h"
++#include "engine/platform/frame_mode.h"
+ #if defined(__APPLE__)
+ #include "engine/platform/apple_host.h"
+ #endif
+@@ -137,6 +138,7 @@ struct Options {
+     float demo_rate = 1.0f;
+     float tick_rate = 60.0f;
+     float display_rate = 0.0f;
++    int fps_limit_override = 0;
+     bool trap_log = false;
+     bool first_boot_options = false;
+     uint32_t width = 1600;
+@@ -209,6 +211,7 @@ constexpr OptionSpec kOptionSpecs[] = {
+     {"--seed", 1, "<n> random seed"},
+     {"--f160-light", 1, "<red|green|blue|yellow|white|1-100> the f160 light roll"},
+     {"--bug-screen", 1, "<-1..6> force the f120 bug screen"},
++    {"--fps-limit", 1, "<30|60> presentation cap; does not save this override"},
+     {"--tick-rate", 1, "<hz> game tick rate"},
+     {"--display-rate", 1, "<hz> paced display rate"},
+     {"--demo-rate", 1, "<x> demo playback speed (tests)"},
+@@ -346,6 +349,9 @@ Options ParseOptions(int argc, char** argv) {
+                                                             : std::clamp(std::atoi(colour.c_str()), 0, 100);
+         } else if (arg == "--bug-screen" && has_value) {
+             options.bug_screen = std::clamp(std::atoi(argv[++i]), -1, 6);
++        } else if (arg == "--fps-limit" && has_value) {
++            options.fps_limit_override = pt::ParseComparisonFrameLimit(argv[++i]);
++            if (!options.fps_limit_override) RefuseCommandLine("--fps-limit must be 30 or 60");
+         } else if (arg == "--tick-rate" && has_value) {
+             options.tick_rate = std::max(10.0f, std::stof(argv[++i]));
+         } else if (arg == "--display-rate" && has_value) {
+@@ -1645,6 +1651,13 @@ public:
+                                  app_.scene.upscale.frame_generation == pt::FrameGenKind::Dlss;
+         display.rows.push_back(Row(kVsync, "pc_vsync", OffOn(), s.display.vsync ? 1 : 0,
+                                    dlssg_vsync ? "pc_note_vsync_dlssg" : s.display.vsync ? "pc_note_vsync" : "pc_note_vsync_off"));
++#if PT_IOS
++        auto frame_limit = Row(kFrameLimit, "pc_frame_limit", {"30 FPS", "60 FPS"},
++                               pt::EffectiveFrameLimit(s.display.fps_limit, app_.options.fps_limit_override) == 60 ? 1 : 0,
++                               app_.options.fps_limit_override ? "pc_note_frame_limit_fixed" : "pc_note_frame_limit");
++        frame_limit.enabled = !app_.options.fps_limit_override;
++        display.rows.push_back(std::move(frame_limit));
++#endif
+         display.rows.push_back(Row(kFocusPause, "pc_focus_pause", OffOn(), s.display.pause_on_focus_loss ? 1 : 0, "pc_note_focus_pause"));
+         display.rows.push_back(Row(kFocusMute, "pc_focus_mute", OffOn(), s.display.mute_in_background ? 1 : 0, "pc_note_focus_mute"));
+         out.push_back(std::move(display));
+@@ -1852,6 +1865,9 @@ public:
+         case kVrTurn:
+             s.vr.turn = std::clamp(value, 0, 1);
+             break;
++        case kFrameLimit:
++            if (!app_.options.fps_limit_override) s.display.fps_limit = value == 1 ? 60 : 30;
++            break;
+         case kVsync:
+             s.display.vsync = value == 1;
+             app_.renderer.SetVsync(s.display.vsync);
+@@ -2264,6 +2280,7 @@ private:
+         kLoopBrowser, kExtras, kFreecam, kPhotoMode, kStreetWalk, kStreetRestart, kStreetLeave, kLoopLock, kThirdPerson, kSpeedrun, kLiveSplit, kRunMenu, kRunReal, kRunGame, kRunBest,
+         kArchive, kArchiveLock,
+         kVr, kVrMode, kVrFlashlight, kVrTurn,
++        kFrameLimit,
+         kLoopFirst = 1000,
+         kRunSplitFirst = 3000,
+         kModFirst = 2000,
+@@ -4338,7 +4355,7 @@ int RunGame(App& app, pt::Vfs& vfs) {
+                             status_frames / status_seconds, status_gpu / std::max<uint64_t>(status_frames, 1), used / 1048576.0,
+                             budget / 1048576.0, render_extent.width, render_extent.height, app.settings.upscaling.upscaler,
+                             app.settings.upscaling.quality, app.settings.upscaling.frame_generation,
+-                            app.settings.display.vsync ? "on" : "off", app.settings.display.fps_limit, game.Floor().CurrentFloorName(),
++                            app.settings.display.vsync ? "on" : "off", pt::EffectiveFrameLimit(app.settings.display.fps_limit, options.fps_limit_override), game.Floor().CurrentFloorName(),
+                             ui_ready && ui.MenuOpen() ? ", menu open" : "");
+ #if PT_IOS
+                 const int low_power = pt_apple_low_power_mode();
+@@ -4357,7 +4374,7 @@ int RunGame(App& app, pt::Vfs& vfs) {
+             constexpr int kMenuFpsCap = 60;
+             static std::chrono::steady_clock::time_point frame_deadline{};
+             const bool menu = ((ui_ready && ui.MenuOpen()) || show_settings || game.Paused()) && !photo_mode;
+-            int cap = app.settings.display.fps_limit;
++            int cap = pt::EffectiveFrameLimit(app.settings.display.fps_limit, options.fps_limit_override);
+             if (menu) {
+                 cap = cap > 0 ? std::min(cap, kMenuFpsCap) : kMenuFpsCap;
+             }
+@@ -4623,7 +4640,7 @@ int main(int argc, char** argv) {
+         }
+ #if PT_IOS
+         app.settings.network.check_updates = false;
+-        app.settings.display.fps_limit = 30;
++        app.settings.display.fps_limit = pt::MobileFrameLimit(app.settings.display.fps_limit);
+         app.settings.display.width = 1920;
+         app.settings.display.height = 1080;
+         app.settings.display.fullscreen = 1;
+diff --git a/tests/mobile_frame_mode_test.cpp b/tests/mobile_frame_mode_test.cpp
+new file mode 100644
+index 0000000..51156ac
+--- /dev/null
++++ b/tests/mobile_frame_mode_test.cpp
+@@ -0,0 +1,19 @@
++#include "engine/platform/frame_mode.h"
++#include "engine/platform/settings.h"
++#include <cassert>
++int main() {
++    for (auto value : {"", "0", "59", "120", "60hz", " 60", "60\n"})
++        assert(pt::ParseComparisonFrameLimit(value) == 0);
++    assert(pt::ParseComparisonFrameLimit("30") == 30);
++    assert(pt::ParseComparisonFrameLimit("60") == 60);
++    for (int saved : {0, 20, 30, 59, 60, 120})
++        assert(pt::MobileFrameLimit(saved) == (saved == 60 ? 60 : 30));
++    pt::AppSettings settings;
++    settings.display.fps_limit = 30;
++    assert(pt::EffectiveFrameLimit(settings.display.fps_limit, 60) == 60);
++    assert(settings.display.fps_limit == 30); // transient comparison never changes saved choices
++    settings.display.fps_limit = 60;
++    assert(pt::EffectiveFrameLimit(settings.display.fps_limit, 30) == 30);
++    assert(settings.display.fps_limit == 60);
++    assert(pt::EffectiveFrameLimit(60, 0) == 60);
++}
+diff --git a/tests/settings_roundtrip_test.cpp b/tests/settings_roundtrip_test.cpp
+index 344d60d..127e6d6 100644
+--- a/tests/settings_roundtrip_test.cpp
++++ b/tests/settings_roundtrip_test.cpp
+@@ -23,7 +23,7 @@ bool Same(const pt::AppSettings& a, const pt::AppSettings& b) {
+     const auto& x = a.display;
+     const auto& y = b.display;
+     return x.width == y.width && x.height == y.height && x.fullscreen == y.fullscreen && x.vsync == y.vsync &&
+-           x.pause_on_focus_loss == y.pause_on_focus_loss && x.mute_in_background == y.mute_in_background && x.letterbox == y.letterbox &&
++           x.pause_on_focus_loss == y.pause_on_focus_loss && x.mute_in_background == y.mute_in_background && x.fps_limit == y.fps_limit && x.letterbox == y.letterbox &&
+            Near(a.input.mouse_sensitivity, b.input.mouse_sensitivity) && Near(a.input.gamepad_dead_zone, b.input.gamepad_dead_zone) &&
+            a.input.rumble == b.input.rumble && Near(a.camera.roll, b.camera.roll) && a.camera.third_person == b.camera.third_person && Near(a.audio.volume, b.audio.volume) &&
+            a.voice.device == b.voice.device && a.voice.key == b.voice.key && a.upscaling.upscaler == b.upscaling.upscaler &&
+@@ -61,6 +61,8 @@ int main(int argc, char** argv) {
+         {"display.vsync", [](auto& s) { s.display.vsync = false; }},
+         {"display.pause_on_focus_loss", [](auto& s) { s.display.pause_on_focus_loss = false; }},
+         {"display.mute_in_background", [](auto& s) { s.display.mute_in_background = true; }},
++        {"display.fps_limit 30", [](auto& s) { s.display.fps_limit = 30; }},
++        {"display.fps_limit 60", [](auto& s) { s.display.fps_limit = 60; }},
+         {"display.letterbox 1", [](auto& s) { s.display.letterbox = 1; }},
+         {"display.letterbox 2", [](auto& s) { s.display.letterbox = 2; }},
+         {"input.mouse_sensitivity", [](auto& s) { s.input.mouse_sensitivity = 0.35f; }},

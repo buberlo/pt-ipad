@@ -29,6 +29,10 @@ def main():
         if not (args.build_dir / 'pt_touch_controls_test').is_file():
             p.error('native touch test missing: first run build_native.py macos --tests')
         commands.append([args.build_dir / 'pt_touch_controls_test'])
+        recovery = args.build_dir / 'pt_profiling_csv_test'
+        commands.append(['xcrun', '--sdk', 'macosx', 'clang++', '-std=c++20', '-UNDEBUG',
+                         '-I', args.source / 'src', ROOT / 'tests/profiling_csv_test.cpp', '-o', recovery])
+        commands.append([recovery])
         commands.append([args.build_dir / 'pt_metal_capabilities_test', args.build_dir / 'tests/texture_descriptor.comp.spv'])
         from prepare_source import source_state
         manifest = json.loads((args.build_dir / 'build-wrapper-inputs.json').read_text())

@@ -1,0 +1,91 @@
+diff --git a/src/engine/platform/profiling_csv.h b/src/engine/platform/profiling_csv.h
+new file mode 100644
+index 0000000..b78ccc2
+--- /dev/null
++++ b/src/engine/platform/profiling_csv.h
+@@ -0,0 +1,28 @@
++#pragma once
++#include <cstdio>
++#include <array>
++namespace pt {
++// Diagnostic only: bounded memory, recoverable rows after external termination.
++class ProfilingCsv {
++public:
++    ProfilingCsv(const char* path, const char* header) : file_(std::fopen(path, "w")) {
++        if (file_) {
++            std::setvbuf(file_, buffer_.data(), _IOFBF, buffer_.size());
++            std::fputs(header, file_);
++            std::fflush(file_);
++        }
++    }
++    ~ProfilingCsv() { if (file_) std::fclose(file_); }
++    ProfilingCsv(const ProfilingCsv&) = delete;
++    ProfilingCsv& operator=(const ProfilingCsv&) = delete;
++    template<class... Args> void Write(const char* format, Args... args) {
++        if (!file_) return;
++        std::fprintf(file_, format, args...);
++        if (++rows_ % 60 == 0) std::fflush(file_);
++    }
++private:
++    FILE* file_ = nullptr;
++    std::array<char, 65536> buffer_{};
++    unsigned long long rows_ = 0;
++};
++}
+diff --git a/src/main.cpp b/src/main.cpp
+index d8865c6..d9e72d9 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -5,6 +5,7 @@
+ #include <SDL3/SDL_main.h>
+ #include "engine/platform/update_check.h"
+ #include "engine/platform/frame_mode.h"
++#include "engine/platform/profiling_csv.h"
+ #if defined(__APPLE__)
+ #include "engine/platform/apple_host.h"
+ #endif
+@@ -3738,24 +3739,12 @@ int RunGame(App& app, pt::Vfs& vfs) {
+                 render_offline(static_cast<uint32_t>(48000.0f * step + 0.5f));
+             }
+             if (tick_csv) {
+-                static std::vector<std::array<float, 4>> ticks_trace;
+-                static const bool registered = [] {
+-                    std::atexit([] {
+-                        if (FILE* f = std::fopen(std::getenv("PT_TICK_CSV"), "w")) {
+-                            std::fprintf(f, "tick,game_ms,vfx_ms,ui_ms,audio_ms\n");
+-                            for (size_t i = 0; i < ticks_trace.size(); ++i) {
+-                                std::fprintf(f, "%zu,%.4f,%.4f,%.4f,%.4f\n", i, ticks_trace[i][0], ticks_trace[i][1], ticks_trace[i][2], ticks_trace[i][3]);
+-                            }
+-                            std::fclose(f);
+-                        }
+-                    });
+-                    return true;
+-                }();
+-                (void)registered;
++                static pt::ProfilingCsv csv(tick_csv, "tick,game_ms,vfx_ms,ui_ms,audio_ms\n");
+                 using ms = std::chrono::duration<float, std::milli>;
+                 const auto tick_t4 = std::chrono::steady_clock::now();
+-                ticks_trace.push_back({ms(tick_t1 - tick_t0).count(), ms(tick_t2 - tick_t1).count(), ms(tick_t3 - tick_t2).count(),
+-                                       ms(tick_t4 - tick_t3).count()});
++                csv.Write("%llu,%.4f,%.4f,%.4f,%.4f\n", static_cast<unsigned long long>(ticks),
++                          ms(tick_t1 - tick_t0).count(), ms(tick_t2 - tick_t1).count(),
++                          ms(tick_t3 - tick_t2).count(), ms(tick_t4 - tick_t3).count());
+             }
+             pending_input.mouse_look = glm::vec2(0.0f);
+             pending_input.pressed = 0;
+@@ -4334,6 +4323,15 @@ int RunGame(App& app, pt::Vfs& vfs) {
+             static double status_gpu = 0.0;
+             ++status_frames;
+             status_gpu += app.scene.Stats().gpu_ms;
++            if (const char* path = std::getenv("PT_GPU_LIVE_CSV")) {
++                static pt::ProfilingCsv csv(path, "tick,floor,gpu,shadows,mirror,gbuffer,lighting,compose,post,cpu_ms,width,height\n");
++                const auto& stats = app.scene.Stats();
++                const auto extent = app.renderer.RenderExtent();
++                csv.Write("%llu,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%u,%u\n",
++                          static_cast<unsigned long long>(ticks), game.Floor().CurrentFloorName().c_str(), stats.gpu_ms,
++                          stats.pass_ms[0], stats.pass_ms[1], stats.pass_ms[2], stats.pass_ms[3], stats.pass_ms[4],
++                          stats.pass_ms[5], stats.cpu_ms, extent.width, extent.height);
++            }
+             const auto status_now = std::chrono::steady_clock::now();
+             const double status_seconds = std::chrono::duration<double>(status_now - status_start).count();
+             if (status_seconds >= 10.0) {

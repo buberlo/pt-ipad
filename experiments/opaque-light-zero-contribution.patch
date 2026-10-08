@@ -1,0 +1,16 @@
+diff --git a/shaders/lighting.glsl b/shaders/lighting.glsl
+index abc3da2..55eb025 100644
+--- a/shaders/lighting.glsl
++++ b/shaders/lighting.glsl
+@@ -112,6 +112,11 @@ bool EvaluateLight(Light l, View v, Surface s, bool shadows, vec2 frag, out vec3
+     if (length(radiance) <= 1.0e-4) {
+         return false;
+     }
++    // An opaque back-facing surface has exactly zero diffuse and specular
++    // contribution below. Keep the draw/alpha result but skip shadow and LUT work.
++    if (s.translucency == 0.0 && dot(s.N, L) <= 0.0) {
++        return true;
++    }
+     float shadow = 1.0;
+     if (l.info.x >= 0 && shadows) {
+ #ifdef PT_RT_SHADOWS

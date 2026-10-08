@@ -64,3 +64,10 @@ Evidence: `reports-private/voice-synthetic/result.json`, `native-voice.log`, and
 
 - Compare original Windows/native reference captures with corresponding native Mac/iPad scenes; no Windows reference run was reproduced here.
 - On the physical iPad, verify asset delivery, touch/gamepad controls, real microphone recognition, save/resume, app backgrounding, visual/audio behavior, and sustained frame time in active scenes. A signed or installed application does not satisfy these checks.
+
+
+## Build 9 frame-mode regression
+
+After the 30/60 controls and buffered profiling changes, the native Mac runtime repeated `full`, `photo`, `photooption` and `gouge` with each explicit `--fps-limit 30` / `--fps-limit 60`. All eight processes exited 0: **98/98 checkpoints**, including the ending in both full routes; **97 original Lua chunks ran with zero failures**. Each full route retained two known f060 navigation diagnostics. The source hash was `42eef3a2551d9701beb3f4720dc7f7542b5ae0f5b366ad7c9784a08ec152f3ff`.
+
+These runs were headless, with accelerated demos and saves disabled. They check shared progression at both presentation settings; they do not prove physical movement/camera timing, short USE taps, live microphone input or 60-FPS device performance. Evidence remains private under `reports-private/walkthrough-macos-build9/`.

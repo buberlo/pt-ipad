@@ -18,7 +18,7 @@ from build_provenance import (MANIFEST_NAME, bundle_resources_hash, canonical_ha
 ROOT = Path(__file__).resolve().parents[1]
 DEPENDENCIES = ('sdl3', 'zlib', 'whisper', 'volk', 'vma', 'glm', 'imgui', 'stb',
                 'lua51', 'bc7enc', 'harfbuzz', 'ogg', 'vorbis')
-HOST_TESTS = ('pt_tests', 'pt_voice_match_test', 'pt_graphics_preset_test',
+HOST_TESTS = ('pt_mobile_frame_mode_test', 'pt_tests', 'pt_voice_match_test', 'pt_graphics_preset_test',
               'pt_blur_sway_test', 'pt_descriptor_budget_test', 'pt_settings_roundtrip_test',
               'pt_save_status_test', 'pt_save_reset_test', 'pt_mods_test', 'pt_ipad_input_test',
               'pt_asset_install_test', 'pt_script_api_test')
@@ -60,7 +60,7 @@ def main(argv=None):
     parser.add_argument('--developer-dir', type=Path, default=Path('/Applications/Xcode.app/Contents/Developer'))
     parser.add_argument('--minimum-os', help='default macOS 14.0 or iOS 18.0')
     parser.add_argument('--bundle-id', type=bundle_id, default=DEFAULT_BUNDLE_ID)
-    parser.add_argument('--build-number', type=int, default=6)
+    parser.add_argument('--build-number', type=int, default=9)
     parser.add_argument('--host-glslc', type=Path)
     parser.add_argument('--voice-dir', type=Path)
     parser.add_argument('--moltenvk-root', type=Path,

@@ -12,7 +12,7 @@ python3 tools/prepare_source.py
 python3 tools/validate_local.py --python-only
 ```
 
-Begin with no pre-existing `build/` directory. The source pin, sixteen ordered patches and `dependency-lock.json` identify the recipe. Dependencies and downloaded voice models are verified against the lock; observed host compiler/tool versions are recorded rather than claimed bit-reproducible.
+Begin with no pre-existing `build/` directory. The source pin, eighteen ordered patches and `dependency-lock.json` identify the recipe. Dependencies and downloaded voice models are verified against the lock; observed host compiler/tool versions are recorded rather than claimed bit-reproducible.
 
 ## Independently build the target driver
 
@@ -38,9 +38,9 @@ Use the actual published extractor path printed by the bootstrap helper if it di
 ## Build and local gate
 
 ```sh
-python3 tools/build_native.py macos --tests --bundle-id org.example.pt --build-number 7
+python3 tools/build_native.py macos --tests --bundle-id org.example.pt --build-number 9
 python3 tools/validate_local.py --assets assets-private/CUSA01127
-python3 tools/build_native.py ios --bundle-id org.example.pt --build-number 7 \
+python3 tools/build_native.py ios --bundle-id org.example.pt --build-number 9 \
   --moltenvk-root build/MoltenVK
 ```
 
@@ -52,7 +52,7 @@ Model downloads stay in ignored build directories. Build manifests record model,
 python3 tools/sign_ios.py --bundle-id org.example.pt \
   --app build/ios-arm64/pt.app \
   --profile /absolute/private/development.mobileprovision \
-  --identity 'Apple Development: your identity' --output artifacts/PT-build7.ipa
+  --identity 'Apple Development: your identity' --output artifacts/PT-build9.ipa
 ```
 
 The profile must authorize that bundle ID and device; its certificate must match the signature. Manifest/plist identity and built bytes must agree. Old schema-1 manifests are accepted only for the historical default ID. Signer publishes a new signed copy and receipt without changing the input.
@@ -64,7 +64,7 @@ python3 tools/ipad_command.py --record /absolute/private/ipad.json \
   --device YOUR_DEVICE_ID --create-record
 python3 tools/ipad_command.py --record /absolute/private/ipad.json \
   --device YOUR_DEVICE_ID --session-id rebuild-test --minutes 3 -- \
-  xcrun devicectl device install app --device YOUR_DEVICE_ID artifacts/PT-build7/pt.app
+  xcrun devicectl device install app --device YOUR_DEVICE_ID artifacts/PT-build9/pt.app
 python3 tools/ipad_command.py --record /absolute/private/ipad.json \
   --device YOUR_DEVICE_ID --session-id rebuild-test --minutes 5 -- \
   xcrun devicectl device copy to --device YOUR_DEVICE_ID \

@@ -1,20 +1,29 @@
 # Implementation status
 
-As of 2026-10-08, development build 6 is a compiled and development-signed native ARM64 iPad app. Build 6 is installed as P.T. on the M2 iPad. Original assets are extracted and verified. Build 3 ran on the physical M2 iPad through the final-puzzle loop; builds 4–6 contain the subsequent fixes and presentation changes. Full release acceptance is **not complete**.
+As of 2026-10-08, development build 9 is a compiled, development-signed and installed native ARM64 iPad app. Controlled 30/60 comparison work is in progress; stable 1080p/60 is not accepted. See [qualification procedure](PERFORMANCE_60FPS.md). Original assets are extracted and verified. Build 3 ran on the physical M2 iPad through the final-puzzle loop; builds 4–6 contain the subsequent fixes and presentation changes. Full release acceptance is **not complete**.
 
 | State | Evidence |
 | --- | --- |
 | Repository | Public buberlo/pt-ipad; GitHub Actions disabled; local checks only |
-| Reproducible source | Immutable upstream v1.0.1 plus 16 ordered patches; fresh reconstruction matches the built source |
+| Reproducible source | Immutable upstream v1.0.1 plus 18 ordered patches; fresh reconstruction matches the built source |
 | Assets | CUSA01127 v01.00; three matching US archive hashes; 12 readable core packages |
-| Built | Complete macOS ARM64 and iPhoneOS ARM64 build 6, 1080p internal target, 30 FPS cap |
-| Signed | Build 6 signature, certificate/profile and embedded build manifest verified |
-| Installed | Build 6 confirmed on the M2 iPad as P.T. |
-| Launched | Build 6 running process observed; build 5 fresh startup and corridor verified; build 3 previously captured bathroom, peephole and f160 |
+| Built | Complete macOS ARM64 and iPhoneOS ARM64 build 9, 1080p internal target, selectable 30/60 cap; default 30 |
+| Signed | Build 9 signature, certificate/profile and embedded build manifest verified |
+| Installed | Build 9 installation confirmed; later temporary Build 10 experiment installed, now its test process stopped |
+| Launched | Build 9 controlled profiling launch observed; build 6 running process previously observed; build 5 fresh startup and corridor verified; build 3 previously captured bathroom, peephole and f160 |
 | Playable | Final Mac automated ending passes; iPad scripted run reached 23/27 checkpoints but missed the timed final-puzzle sequence |
 | Accepted | No: complete physical playthrough, controls, visual parity and sustained performance remain open |
 
-## Build 6 identity
+## Build 9 comparison candidate
+
+- Patched source SHA-256: `42eef3a2551d9701beb3f4720dc7f7542b5ae0f5b366ad7c9784a08ec152f3ff`.
+- IPA SHA-256: `6a14715c823938304ed11aaea4610a2b6f20b6174b7bd9459b7eb19433c052e0`.
+- Signed executable SHA-256: `b757e00d8cea69aab8fede963f19226df4cabf111db2dc852c75050a9e83d4a0`.
+- Embedded manifest SHA-256: `5d804d29b3015d0befdbe5077775f8213ffec57fa383b9bbcbff5333dc3bfe98`.
+
+Persistent pause-menu 30/60 selection and transient `--fps-limit` are implemented. Graphics and simulation timing are unchanged. No renderer optimization or 60-FPS acceptance is claimed. Physical short USE taps remain unverified. Raw device evidence and signed artifacts stay local. The later Build 10 lighting trial is archived under `experiments/` and excluded from the normal recipe; it was the last temporary device installation. Stable 60 FPS remains unaccepted.
+
+## Historical build 6 identity
 
 - Patched source tree SHA-256: `dbd1a4930d595c5a27daad94225f454717b91f090651e1d9cee317df08ff165f`.
 - IPA SHA-256: `d01101580c72e7d481844de6b9b68645f911d77705a95da9cbd0cc21107055e2`.

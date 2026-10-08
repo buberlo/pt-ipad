@@ -61,6 +61,7 @@ def write_receipt(path, token):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--fps-limit", type=int, choices=(30,60), default=30)
     p.add_argument("--device", required=True)
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--seconds", type=int, default=45, choices=range(10, 181))
@@ -147,7 +148,7 @@ def main():
         if any(is_pt_executable(x.get("executable")) for x in running):
             raise RuntimeError("PT started during staging; preserve the existing session")
         attempted = True
-        arguments = ["--activate", BUNDLE, "--no-save", "--no-mods"]
+        arguments = ["--activate", BUNDLE, "--fps-limit", str(args.fps_limit), "--no-save", "--no-mods"]
         if not args.natural_startup:
             arguments.extend(["--start-floor", "f010"])
         arguments.extend(["--settings", str(device_dir / "session.ini"), "--log", str(device_dir / "pt.log")])

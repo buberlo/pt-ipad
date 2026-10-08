@@ -6,7 +6,7 @@ A native ARM64 iPad source port of P.T., built on the open-source [LoreanXavier/
 
 This project compiles the reconstructed C++ engine and game systems directly for Apple hardware. The runtime also reads original game data and packaged scripts. It does not run the original PlayStation executable or emulate the console CPU. The iPad adaptation adds native application packaging, touch controls, lifecycle handling, verified asset installation and a Vulkan renderer running over Metal through MoltenVK.
 
-**Development status:** build 6 is built, development-signed and installed on an M2 iPad. The original corridor and startup were verified on build 5. Complete physical-device progression, visual fidelity and sustained performance acceptance remain open. This is a working development port, not a finished release. See [the current status](docs/STATUS.md) and [device results](docs/DEVICE_REPORT.md).
+**Development status:** build 9 is built, development-signed and installed on an M2 iPad. The original corridor and startup were verified on build 5. Complete physical-device progression, visual fidelity and sustained performance acceptance remain open. This is a working development port, not a finished release. See [the current status](docs/STATUS.md) and [device results](docs/DEVICE_REPORT.md).
 
 ## What runs on the iPad
 
@@ -16,7 +16,7 @@ This project compiles the reconstructed C++ engine and game systems directly for
 - **SDL3/UIKit** application hosting, touch/gamepad input and Apple lifecycle handling.
 - Statically linked **whisper.cpp** for local voice recognition; downloaded voice models stay outside Git.
 
-The initial target is the M2 iPad, landscape presentation, a 1080p internal render target and a **30 FPS goal**. The goal is not yet a sustained-performance result.
+The initial target is the M2 iPad, landscape presentation, a 1080p internal render target and a **1080p / 60 FPS target** with unchanged graphics and game speed. During qualification, 30 FPS remains the default and pause settings offer 30 or 60 FPS. Stable 60 FPS is not yet accepted; see the [comparison and acceptance procedure](docs/PERFORMANCE_60FPS.md).
 
 ## iPad behavior
 
@@ -32,7 +32,7 @@ cd pt-ipad
 python3 tools/prepare_source.py
 ```
 
-The pinned upstream submodule stays clean. Sixteen ordered patches reconstruct the Apple source under the ignored `build/port-src` checkout. Dependency revisions and archive hashes are recorded in `dependency-lock.json`; builds and tests run locally. GitHub Actions are disabled.
+The pinned upstream submodule stays clean. Eighteen ordered patches reconstruct the Apple source under the ignored `build/port-src` checkout. Dependency revisions and archive hashes are recorded in `dependency-lock.json`; builds and tests run locally. GitHub Actions are disabled.
 
 See [local build and signing instructions](docs/BUILD.md) for Xcode, native dependencies, host shader compilation, target MoltenVK and development signing. Applications, provisioning profiles, model downloads and build outputs are not distributed in this repository.
 
