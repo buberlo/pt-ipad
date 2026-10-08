@@ -1,8 +1,8 @@
 # Physical iPad validation
 
-The native application and its tools use the shared device coordinator from the existing Madeira/AnyPS5 workspace. They do not start Wine, FEX, VPN or CPU JIT. Every device operation must hold the `pt-native` command lease for this chat. Another owner, a paused record, or an unconfirmed earlier cleanup blocks a new operation; expired timestamps do not grant takeover permission. Other queued work remains in the record.
+The local test tools use a shared-device coordinator to prevent concurrent installations and measurements. Every device operation in this workspace must hold the `pt-native` command lease for this chat. Another owner, a paused record, or an unconfirmed earlier cleanup blocks a new operation; expired timestamps do not grant takeover permission. Other queued work remains in the record. This coordination policy is separate from the game's C++ runtime and is not an application dependency.
 
-The coordinator path and record can be selected through `tools/ipad_command.py`; the default record is `../madeira/installation/ipad-access.json`, also configurable with `PT_IPAD_LEASE_RECORD`. The source of the coordinator is not copied into this project.
+Configure the record through `PT_IPAD_LEASE_RECORD` or `tools/ipad_command.py --record /absolute/path/ipad-access.json`; select the locally installed compatible coordinator through `--lease-wrapper /absolute/path/with-ipad-lease.py`. Historical default paths refer to the original development workspace. The public repository does not include that external coordinator, so an independent checkout must configure it before using these guarded capture helpers. Normal Xcode installation of the native application is independent of these test helpers; follow the applicable device-access policy before any physical-device action.
 
 ## Build, sign and install
 
@@ -54,7 +54,7 @@ Rebuild the signed XCTest products from the current Swift source before retrying
 
 ```sh
 python3 tools/device_ui_test.py --device "$PT_DEVICE" \
-  --app artifacts/PT-Native-build4/pt.app --xctestrun "$PT_XCTESTRUN" \
+  --app artifacts/PT-build6/pt.app --xctestrun "$PT_XCTESTRUN" \
   --output reports-private/device-ui-new-build --seconds 240
 ```
 

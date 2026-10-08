@@ -10,7 +10,16 @@ Use full Xcode and a host `glslc`, CMake and Ninja. Set `DEVELOPER_DIR` per comm
 brew install cmake ninja shaderc molten-vk vulkan-headers
 ```
 
-For iOS, provide a locally built ARM64 MoltenVK archive. The default is the existing sibling `anyps5-ipad/upstreams/MoltenVK` checkout. Its source commit must match `source-lock.json`. The wrapper records the actual archive path and SHA-256 independently of that source checkout; it does not claim to have rebuilt a pre-existing archive.
+For iOS, provide a locally built ARM64 MoltenVK archive and select its checkout explicitly with `--moltenvk-root`. Its source commit must match `source-lock.json`. The wrapper records the actual archive path and SHA-256 independently of that source checkout; it does not claim to have rebuilt a pre-existing archive. No other application repository is needed to build the game.
+
+Prepare the pinned target driver in an independent local directory:
+
+```sh
+git clone https://github.com/KhronosGroup/MoltenVK.git /absolute/local/path/MoltenVK
+git -C /absolute/local/path/MoltenVK checkout fae55a18779ee59da2cc5373a367a0282779c171
+```
+
+Follow that revision's [dependency and iOS build instructions](https://github.com/KhronosGroup/MoltenVK/tree/fae55a18779ee59da2cc5373a367a0282779c171): run `./fetchDependencies --ios` and `make ios` from its checkout. The expected archive is `Package/Release/MoltenVK/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a`, with target headers under `Package/Release/MoltenVK/include`. Keep generated outputs ignored so the source checkout remains clean. An independent rebuild of this target driver remains an acceptance task; the development app used the already-built archive recorded below.
 
 The inspected iOS source commit is `fae55a18779ee59da2cc5373a367a0282779c171`. The reused archive at `Package/Release/MoltenVK/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a` has SHA-256 `5b04b88bd96ea1905e6217b9424bc5fc4c78dd58607428b45cd6fa916464384d`.
 
@@ -30,7 +39,7 @@ These are the validated wrapper commands:
 
 ```sh
 python3 tools/build_native.py macos --tests
-python3 tools/build_native.py ios
+python3 tools/build_native.py ios --moltenvk-root /absolute/local/path/MoltenVK
 ```
 
 `--prepare-source` explicitly requests safe source preparation before configuring. `--source`, `--build-dir`, `--developer-dir`, `--host-glslc`, `--voice-dir`, `--moltenvk-root`, `--moltenvk-library` and `--moltenvk-include` select local inputs. `--configure-only` stops before compilation. Use one build at a time with the shared dependency cache.

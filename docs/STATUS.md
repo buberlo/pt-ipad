@@ -4,7 +4,7 @@ As of 2026-10-08, development build 6 is a compiled and development-signed nativ
 
 | State | Evidence |
 | --- | --- |
-| Repository | Private buberlo/pt-ipad; GitHub Actions disabled; local checks only |
+| Repository | Public buberlo/pt-ipad; GitHub Actions disabled; local checks only |
 | Reproducible source | Immutable upstream v1.0.1 plus 16 ordered patches; fresh reconstruction matches the built source |
 | Assets | CUSA01127 v01.00; three matching US archive hashes; 12 readable core packages |
 | Built | Complete macOS ARM64 and iPhoneOS ARM64 build 6, 1080p internal target, 30 FPS cap |

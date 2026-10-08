@@ -4,7 +4,7 @@ Approved target: a standalone ARM64 app for the existing M2 iPad, reconstructed 
 
 ## Ordered milestones
 
-1. **Reproducible source:** private repository, clean pinned upstream v1.0.1, ordered Apple patches, pinned dependencies, local builds and license provenance. A fresh checkout must reconstruct the tested source.
+1. **Reproducible source:** public source repository, clean pinned upstream v1.0.1, ordered Apple patches, pinned dependencies, local builds and license provenance. A fresh checkout must reconstruct the tested source. Game data and signed application artifacts remain private.
 2. **Assets and reference:** hash the CUSA01127 v01.00 package; validate extraction using the supported host helper; retain a manifest for the three original archives. Reproduce the Windows reference and record its known fidelity/progression defects. Package metadata alone is not asset acceptance.
 3. **Native builds:** macOS ARM64 baseline followed by an iPhoneOS ARM64 bundle. Separate host shader tools from target libraries, statically link voice recognition, fix platform paths and omit desktop enhancement executables, upscalers, OpenXR and Game+.
 4. **Renderer qualification:** probe actual features, shader translation, formats, sample counts and descriptor limits. Adapt texture bindings and portability handling. Require authentic corridor rendering, movement, collision and audio on-device.
