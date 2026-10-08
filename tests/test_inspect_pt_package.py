@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import inspect_pt_package as pkg
 
-CONTENT_ID = "UP4511-CUSA01127_00-PPPPPPPPTTTTTTTT"
+CONTENT_ID = "XX0000-CUSA01127_00-SYNTHETICPKGTEST"
 
 
 def synthetic_sfo():
