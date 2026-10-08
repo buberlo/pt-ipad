@@ -1,0 +1,57 @@
+diff --git a/shaders/shadow.vert b/shaders/shadow.vert
+--- a/shaders/shadow.vert
++++ b/shaders/shadow.vert
+@@ -43,7 +43,7 @@
+         gl_ClipDistance[0] = side * d.z + 1.0e-4 * len;
+         gl_Position = vec4(p.x, -p.y, 1.0 - len * v.shadow.x, 1.0);
+     } else {
+-        gl_ClipDistance[0] = 1.0;
++        gl_ClipDistance[0] = dot(v.clip_plane.xyz, v.clip_plane.xyz) > 0.0 ? dot(v.clip_plane, world) : 1.0;
+         gl_Position = v.view_projection * world;
+     }
+ }
+diff --git a/src/engine/render/scene_frame.cpp b/src/engine/render/scene_frame.cpp
+--- a/src/engine/render/scene_frame.cpp
++++ b/src/engine/render/scene_frame.cpp
+@@ -1013,6 +1013,7 @@
+             v.view = look;
+             v.projection_param = glm::vec4(1.0f, 1.0f, near_plane, 1.0f);
+             v.eye = glm::vec4(pos, 0.0f);
++            v.clip_plane = src->shadow_clip_plane;
+             ShadowView sv;
+             sv.view = view_count_++;
+             sv.light = c.light;
+diff --git a/src/engine/render/scene_lighting.h b/src/engine/render/scene_lighting.h
+--- a/src/engine/render/scene_lighting.h
++++ b/src/engine/render/scene_lighting.h
+@@ -34,6 +34,7 @@
+     float shadow_cos_outer = -1.0f;
+     float shadow_inv_cone_range = 1.0f;
+     float shadow_fov = 0.0f;
++    glm::vec4 shadow_clip_plane{0.0f};
+     float shadow_bias = 0.0f;
+     float view_bias = 0.0f;
+     float specular_scale = 1.0f;
+diff --git a/src/game/render_scene.cpp b/src/game/render_scene.cpp
+--- a/src/game/render_scene.cpp
++++ b/src/game/render_scene.cpp
+@@ -677,7 +677,18 @@
+     }();
+     l.cast_shadow = light_shadow;
+     l.priority = 0x40;
+-    l.hidden_views = 1u;
++    // The reflected beam illuminates the room as well as the mirror capture.
++    static const bool primary_view = [] {
++        const char* value = std::getenv("PT_MIRROR_LIGHT_PRIMARY");
++        return !value || std::strcmp(value, "0") != 0;
++    }();
++    l.hidden_views = primary_view ? 0u : 1u;
++    static const bool clip_shadow = [] {
++        const char* value = std::getenv("PT_MIRROR_LIGHT_CLIP");
++        return !value || std::strcmp(value, "0") != 0;
++    }();
++    // The virtual light is behind the mirror. Only room-side geometry can block its reflected beam.
++    if (clip_shadow) l.shadow_clip_plane = glm::vec4(n, -glm::dot(n, m) - 0.002f);
+     if (trace) {
+         LogInfo("mirror trace: on at ({:.3f} {:.3f} {:.3f}) from_mirrored {} beam {:.3f} p ({:.3f} {:.3f} {:.3f})", at.x, at.y, at.z, from_mirrored,
+                 glm::length(hit - mirrored), p.x, p.y, p.z);

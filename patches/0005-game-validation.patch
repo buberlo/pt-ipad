@@ -1,0 +1,453 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8f801d4..84b1068 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -323,6 +323,9 @@ target_link_libraries(pt_platform_test PRIVATE pt_engine)
+ add_executable(pt_mods_test tests/mods_test.cpp)
+ target_link_libraries(pt_mods_test PRIVATE pt_engine)
+ 
++add_executable(pt_script_api_test tests/script_api_test.cpp)
++target_link_libraries(pt_script_api_test PRIVATE pt_engine)
++
+ add_executable(pt_ipad_input_test tests/ipad_input_test.cpp)
+ target_link_libraries(pt_ipad_input_test PRIVATE pt_engine)
+ 
+@@ -350,7 +353,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+     add_test(NAME pt_asset_install_test COMMAND pt_asset_install_test)
+     set_tests_properties(pt_asset_install_test PROPERTIES LABELS "asset-free")
+   endif()
+-  foreach(test pt_tests pt_voice_match_test pt_graphics_preset_test pt_blur_sway_test pt_descriptor_budget_test pt_ipad_input_test)
++  foreach(test pt_tests pt_voice_match_test pt_graphics_preset_test pt_blur_sway_test pt_descriptor_budget_test pt_ipad_input_test pt_script_api_test)
+     add_test(NAME ${test} COMMAND ${test})
+     set_tests_properties(${test} PROPERTIES LABELS "asset-free")
+   endforeach()
+diff --git a/src/game/lua_entity.cpp b/src/game/lua_entity.cpp
+index 3e13bb5..3f7e255 100644
+--- a/src/game/lua_entity.cpp
++++ b/src/game/lua_entity.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include "engine/core/log.h"
+ #include "game/stage_manager.h"
++#include "game/script_property.h"
+ 
+ namespace pt::game {
+ namespace {
+@@ -278,7 +279,7 @@ int EntityIndex(lua_State* L) {
+             return 1;
+         }
+     }
+-    const fox2::Property* p = file.FindProperty(entity, key);
++    const fox2::Property* p = FindScriptProperty(file, entity, key);
+     if (!p || !PushProperty(L, *r.stage, file, *p)) {
+         lua_pushnil(L);
+     }
+diff --git a/src/game/script_api.cpp b/src/game/script_api.cpp
+index 22eefff..1999098 100644
+--- a/src/game/script_api.cpp
++++ b/src/game/script_api.cpp
+@@ -3,6 +3,9 @@
+ #include <string_view>
+ 
+ #include "engine/core/log.h"
++#include "engine/fs/fox_crypt.h"
++#include "engine/fs/psarc.h"
++#include "engine/fs/vfs.h"
+ 
+ namespace pt::game {
+ namespace {
+@@ -14,7 +17,17 @@ const char* const kStubApi[][2] = {
+     {"GameFloorLevel", "IsCurrentFloorName"}, {"GameFloorLevel", "RelocateGimmicks"}, {"GameFloorLevel", "GetLoopCount"},
+     {"GameFloorLevel", "StartNazoTrueEnd"}, {"GameFloorLevel", "SubFloorLevel"}, {"GameFloorLevel", "SetFloorLevel"},
+     {"GameFloorLevel", "AddFloorLevel"}, {"GameFloorLevel", "GetFloorLevel"}, {"GameFloorLevel", "SetFloorLevelAndName"}, {"GameFloorLevel", "GoNextFloor"},
+-    {"GrRenderPlugin", "AddPlugin"},
++    {"GrRenderPlugin", "AddPlugin"}, {"GrTools", "SetLodFactorResolution"},
++    {"GrTools", "SetTexturePackLoadConditioningEnable"},
++    {"SubtitlesCommand", "SetSubpFilePath"}, {"SubtitlesCommand", "SetDefaultGeneratorName"},
++    {"SubtitlesCommand", "SetSubFpkFilePath"},
++    {"SubtitlesCommand", "SetDefaultSubPriority"},
++    {"UiDaemon", "ResetDefaultButtonMap"}, {"UiDaemon", "SetButtonMap"}, {"UiDaemon", "CreateButtonMap"},
++    {"Application", "AddGame"}, {"Application", "SetMainGame"},
++    {"Editor", "CreateScene"}, {"Editor", "CreateBucket"}, {"Editor", "SetMainBucket"},
++    {"Editor", "Setup"}, {"Editor", "CreateNewEditableBucket"}, {"Editor", "SetCurrentEditableBucket"},
++    {"Game", "CreateScene"}, {"Game", "CreateBucket"}, {"Game", "SetMainBucket"},
++    {"CameraSelector", "SetMainListener"},
+     {"GrTools", "LoadShaderPack"}, {"GrTools", "SetTerrainMaterialTexture"}, {"GrTools", "SetEnablePackedSmallTextureStreaming"},
+     {"GrTools", "SetEnableLnmForTerrainNormal"}, {"GrTools", "SetEnableLnmForDecalNormal"}, {"GrTools", "GetDeviceName"},
+     {"GrTools", "FontSystemLoad"}, {"GrTools", "AddExtraShaderPerfLua"}, {"GrTools", "FontSystemInit"}, {"GrTools", "SetDefaultTextureLoadPath"},
+@@ -84,12 +97,90 @@ int StubFunction(lua_State* L) {
+     if (call.module != "Fox" || call.function != "Log") {
+         LogDebug("lua stub {}.{}({})", call.module, call.function, joined);
+     }
++    // Boot validation needs the documented return shape of these configuration APIs.
++    // These tables do not create engine services, render plugins, or input mappings.
++    const bool null_test = call.module == "Entity" && call.function == "IsNull";
++    const bool singleton = call.module == "UiDaemon" && call.function == "GetInstance";
++    const bool object = (call.module == "Editor" || call.module == "Game") &&
++                        (call.function == "CreateScene" || call.function == "CreateBucket" ||
++                         call.function == "CreateNewEditableBucket");
+     if (g_calls.size() < 4096) {
+         g_calls.push_back(std::move(call));
+     }
++    if (null_test) {
++        lua_pushboolean(L, lua_isnoneornil(L, 1));
++        return 1;
++    }
++    if (singleton) {
++        lua_getglobal(L, "UiDaemon");
++        return 1;
++    }
++    if (object) {
++        lua_newtable(L);
++        return 1;
++    }
+     return 0;
+ }
+ 
++// Only known constructors are callable. Unknown globals/methods remain nil so the
++// validation VM still reports missing APIs instead of swallowing arbitrary calls.
++int ConfigurationConstructor(lua_State* L) {
++    StubFunction(L);
++    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
++        luaL_checktype(L, 2, LUA_TTABLE);
++        lua_pushvalue(L, 2);
++    } else {
++        lua_newtable(L);
++    }
++    lua_newtable(L);
++    lua_pushvalue(L, 1);
++    lua_setfield(L, -2, "__index");
++    lua_setmetatable(L, -2);
++    return 1;
++}
++
++int ArchiveDoFile(lua_State* L) {
++    const char* requested = luaL_checkstring(L, 1);
++    lua_settop(L, 1);
++    auto* archive = static_cast<const Psarc*>(lua_touserdata(L, lua_upvalueindex(1)));
++    int status = LUA_ERRFILE;
++    // Destroy C++ strings/buffers before any Lua longjmp (lua_error/lua_call).
++    {
++        const std::string path = Vfs::ToArchivePath(requested);
++        const auto part = std::filesystem::path(path);
++        bool invalid = path.empty() || part.is_absolute();
++        for (const auto& component : part) invalid |= component == "..";
++        auto code = invalid ? std::nullopt : archive->Read(path);
++        if (!code) {
++            lua_pushfstring(L, "archive script unavailable: %s", requested);
++        } else {
++            if (fox::IsWrapped(*code)) *code = fox::Unwrap(*code);
++            const std::string chunk = "@" + path;
++            status = luaL_loadbuffer(L, reinterpret_cast<const char*>(code->data()), code->size(), chunk.c_str());
++        }
++    }
++    if (status != 0) return lua_error(L);
++    lua_call(L, 0, LUA_MULTRET);
++    return lua_gettop(L) - 1;
++}
++
++void RegisterConfigurationConstructor(lua_State* L, const char* name) {
++    lua_getglobal(L, name);
++    if (!lua_istable(L, -1)) {
++        lua_pop(L, 1);
++        lua_newtable(L);
++        lua_pushvalue(L, -1);
++        lua_setglobal(L, name);
++    }
++    lua_newtable(L);
++    lua_pushstring(L, name);
++    lua_pushliteral(L, "new");
++    lua_pushcclosure(L, ConfigurationConstructor, 2);
++    lua_setfield(L, -2, "__call");
++    lua_setmetatable(L, -2);
++    lua_pop(L, 1);
++}
++
+ }
+ 
+ void RegisterStubApi(LuaVm& vm) {
+@@ -102,15 +193,99 @@ void RegisterStubApi(LuaVm& vm) {
+             lua_pushvalue(L, -1);
+             lua_setglobal(L, entry[0]);
+         }
++        // Archived class scripts may replace a module table. Re-registration
++        // restores only absent native methods and preserves Lua implementations.
++        lua_getfield(L, -1, entry[1]);
++        const bool missing = lua_isnil(L, -1);
++        lua_pop(L, 1);
++        if (!missing) { lua_pop(L, 1); continue; }
+         lua_pushstring(L, entry[0]);
+         lua_pushstring(L, entry[1]);
+         lua_pushcclosure(L, StubFunction, 2);
+         lua_setfield(L, -2, entry[1]);
+         lua_pop(L, 1);
+     }
++    // Explicit configuration adapters for the archived boot Lua. The native
++    // renderer/input systems remain responsible for actual runtime behavior.
++    const char* const constructors[] = {
++        "EdGraphSetting",
++        "EdGraphContextMenu",
++        "Application",
++        "Editor",
++        "Game",
++        "CameraSelector",
++        "PhDaemon",
++        "UiDaemon",
++        "SubtitlesDaemon",
++        "GrPluginViewCallback",
++        "GrPluginModelSetup",
++        "GrPluginOccluder",
++        "GrPluginPrimitiveUnfiltered",
++        "GrPluginOverlayModel",
++        "GrPlugin2D",
++        "GrPlugin2DFrontmost",
++        "GrPluginReflectMap",
++        "GrPluginTemporalAA",
++        "GrPluginPostFilter",
++        "GrPluginTonemap",
++        "GrPlugin2DShrink",
++        "GrPluginMotionBlur",
++        "GrPluginColorCorrection",
++        "GrPluginFxaa",
++        "GrPluginPrecomputeSky",
++        "GrPluginDeferredRendering",
++        "GrPluginDeferredGeometry",
++        "GrPluginTerrainDepth",
++        "GrPluginDeferredGeometryOpaque",
++        "GrPluginDeferredGeometryMasked",
++        "GrPluginCloneDeferred",
++        "GrPluginTerrain",
++        "GrPluginDeferredGeometryDecal",
++        "GrPluginDecal",
++        "GrPluginMaterialLayer",
++        "GrPluginSeflShadowOfTerrain",
++        "GrPluginDeferredShading",
++        "GrPluginSphericalHarmonics",
++        "GrPluginLocalLight",
++        "GrPluginShadow",
++        "GrPluginSunlight",
++        "GrPluginLightAccumulateLayer",
++        "GrPluginLineIntegralSSAO",
++        "GrPluginScreenSpaceAmbientOcclusion",
++        "GrPluginSky",
++        "GrPluginGlobalVolumetricFog",
++        "GrPluginAlphaModel",
++        "GrPluginPrimitive",
++        "GrPluginOpticalCamouflage",
++        "GrPluginThermography",
++        "GrPluginScreenCapture",
++        "GrPluginModelWireframe",
++        "GrPluginCloneWireframe",
++        "GrPluginTerrainWireframe",
++        "GrPluginModelPseudoshade",
++        "GrPluginTerrainPseudeShade",
++        "GrPluginForwardRendering",
++        "GrPluginModel",
++        "GrPluginSubSurfaceScatter",
++        "GrPluginDepthOfField",
++    };
++    for (const char* name : constructors) RegisterConfigurationConstructor(L, name);
++    // Validation-only button tokens. The boot script adds four to directional
++    // tokens for status aliases; these values are never routed to a native pad.
++    const char* const pad_tokens[] = {"PAD_U", "PAD_D", "PAD_L", "PAD_R", "STATUS_U", "STATUS_D", "STATUS_L", "STATUS_R",
++                                     "PAD_A", "PAD_B", "PAD_X", "PAD_Y", "PAD_L2", "PAD_R2", "PAD_L1", "PAD_R1",
++                                     "PAD_SELECT", "PAD_START", "PAD_L3", "PAD_R3"};
++    for (size_t i = 0; i < std::size(pad_tokens); ++i) vm.SetModuleNumber("fox", pad_tokens[i], static_cast<double>(i));
+     vm.SetModuleNumber("GameObject", "NULL_ID", 65535.0);
+ }
+ 
++void RegisterArchiveScriptLoader(LuaVm& vm, const Psarc& archive) {
++    lua_State* L = vm.State();
++    lua_pushlightuserdata(L, const_cast<Psarc*>(&archive));
++    lua_pushcclosure(L, ArchiveDoFile, 1);
++    lua_setglobal(L, "dofile");
++}
++
+ const std::vector<ScriptCall>& RecentStubCalls() {
+     return g_calls;
+ }
+diff --git a/src/game/script_api.h b/src/game/script_api.h
+index 55a1bc9..7377eb7 100644
+--- a/src/game/script_api.h
++++ b/src/game/script_api.h
+@@ -5,6 +5,8 @@
+ 
+ #include "engine/script/lua_vm.h"
+ 
++namespace pt { class Psarc; }
++
+ namespace pt::game {
+ 
+ struct ScriptCall {
+@@ -14,6 +16,8 @@ struct ScriptCall {
+ };
+ 
+ void RegisterStubApi(LuaVm& vm);
++// Script-test dofile resolves only mounted archive paths, never the host filesystem.
++void RegisterArchiveScriptLoader(LuaVm& vm, const Psarc& archive);
+ const std::vector<ScriptCall>& RecentStubCalls();
+ void ClearStubCalls();
+ 
+diff --git a/src/game/script_property.h b/src/game/script_property.h
+new file mode 100644
+index 0000000..35736ed
+--- /dev/null
++++ b/src/game/script_property.h
+@@ -0,0 +1,21 @@
++#pragma once
++
++#include "engine/data/fox2.h"
++
++namespace pt::game {
++
++inline const fox2::Property* FindScriptProperty(const fox2::DataSetFile& file,
++                                               const fox2::Entity& entity, std::string_view key) {
++    if (const auto* p = file.FindProperty(entity, key)) return p;
++    // The US hallway f080 light conditions serialize this misspelling, whereas
++    // trapLightEnable and the f040 conditions use modelData. Preserve canonical
++    // values, unknown properties, and malformed legacy values unchanged.
++    if (entity.class_name == "GeoModuleCondition" && key == "modelData") {
++        const auto* legacy = file.FindProperty(entity, "modleData");
++        if (legacy && legacy->type == fox2::DataType::EntityLink &&
++            legacy->container == fox2::Container::DynamicArray) return legacy;
++    }
++    return nullptr;
++}
++
++}
+diff --git a/src/main.cpp b/src/main.cpp
+index c2d236e..625e127 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -421,6 +421,7 @@ Options ParseOptions(int argc, char** argv) {
+ 
+ int RunScriptTest(pt::Vfs& vfs) {
+     pt::LuaVm vm;
++    pt::game::RegisterArchiveScriptLoader(vm, vfs.Archive());
+     pt::game::RegisterStubApi(vm);
+     int loaded = 0;
+     int failed = 0;
+@@ -433,6 +434,7 @@ int RunScriptTest(pt::Vfs& vfs) {
+             for (const auto& entry : package->Entries()) {
+                 if (entry.path.ends_with(".lua")) {
+                     auto code = package->Read(entry);
++                    pt::game::RegisterStubApi(vm);
+                     vm.RunChunk(entry.path, code) ? ++loaded : ++failed;
+                 }
+             }
+@@ -440,6 +442,7 @@ int RunScriptTest(pt::Vfs& vfs) {
+             auto code = vfs.Archive().Read(name);
+             if (code && pt::fox::IsWrapped(*code)) {
+                 auto plain = pt::fox::Unwrap(*code);
++                pt::game::RegisterStubApi(vm);
+                 vm.RunChunk(name, plain) ? ++loaded : ++failed;
+             }
+         }
+diff --git a/tests/script_api_test.cpp b/tests/script_api_test.cpp
+new file mode 100644
+index 0000000..3df92ce
+--- /dev/null
++++ b/tests/script_api_test.cpp
+@@ -0,0 +1,102 @@
++#include <cstdio>
++#include <string_view>
++#include "engine/script/lua_vm.h"
++#include "engine/fs/psarc.h"
++#include "game/script_api.h"
++#include "game/script_property.h"
++#include "game/lua_entity.h"
++#include "game/stage_manager.h"
++
++namespace {
++int failures = 0;
++void Check(bool value, const char* label) {
++    std::printf("%s %s\n", value ? "PASS" : "FAIL", label);
++    failures += !value;
++}
++bool Run(pt::LuaVm& vm, std::string_view source) {
++    return vm.RunChunk("synthetic", {reinterpret_cast<const uint8_t*>(source.data()), source.size()});
++}
++}
++
++int main() {
++    pt::LuaVm vm;
++    pt::game::RegisterStubApi(vm);
++    Check(Run(vm, R"(
++        local config = { pluginName = 'synthetic', priority = 12, isActive = false }
++        local p = GrPluginDepthOfField(config)
++        assert(p == config and p.priority == 12 and p.isActive == false)
++        GrRenderPlugin.AddPlugin(p)
++        GrTools.SetLodFactorResolution(100, 80)
++        SubtitlesCommand:SetDefaultSubPriority(1, 2, 3)
++        local app = Application{ name = 'test' }
++        local editor = Editor{ name = 'editor' }
++        app:AddGame(editor)
++        app:SetMainGame(editor)
++        local scene = editor:CreateScene('scene')
++        local bucket = editor:CreateBucket('bucket', scene)
++        assert(type(scene) == 'table' and type(bucket) == 'table')
++        editor:SetMainBucket(bucket)
++        editor:Setup()
++        local u = UiDaemon.GetInstance()
++        assert(u == UiDaemon.GetInstance())
++        u.ResetDefaultButtonMap()
++        u.SetButtonMap('test', fox.PAD_U + 4)
++        u.CreateButtonMap()
++        assert(type(fox.PAD_A) == 'number')
++        assert(UnknownPlugin == nil and GrTools.UnknownMethod == nil)
++        assert(not pcall(function() GrTools.UnknownMethod() end))
++        assert(not pcall(function() GrPluginDepthOfField(3) end))
++    )"), "explicit boot configuration adapters preserve inputs and fail on unknown APIs");
++    Check(Run(vm, "Editor = { Setting = function() return 42 end }"), "class script replaces table");
++    pt::game::RegisterStubApi(vm);
++    Check(Run(vm, "local e=Editor{}; assert(e:Setting()==42 and type(e:CreateScene('s'))=='table')"),
++          "refresh restores constructors and missing APIs while preserving Lua methods");
++    pt::Psarc empty_archive;
++    pt::game::RegisterArchiveScriptLoader(vm, empty_archive);
++    Check(Run(vm, R"(
++        assert(not pcall(dofile, '../outside.lua'))
++        assert(not pcall(dofile, '/Assets/missing.lua'))
++        assert(not pcall(dofile, 'missing.lua'))
++    )"), "archive dofile fails closed without host file fallback");
++    bool logged = false;
++    for (const auto& call : pt::game::RecentStubCalls()) {
++        logged |= call.module == "GrPluginDepthOfField" && call.function == "new";
++    }
++    Check(logged, "configuration constructors are recorded as stubs");
++    Check(lua_gettop(vm.State()) == 0, "boot adapters leave the VM stack balanced");
++
++    pt::fox2::DataSetFile file;
++    pt::fox2::Entity e;
++    e.class_name = "GeoModuleCondition";
++    pt::fox2::Property legacy;
++    legacy.name = "modleData";
++    legacy.type = pt::fox2::DataType::EntityLink;
++    legacy.container = pt::fox2::Container::DynamicArray;
++    legacy.element_size = sizeof(pt::fox2::EntityLink);
++    e.dynamic_properties.push_back(legacy);
++    auto* resolved = pt::game::FindScriptProperty(file, e, "modelData");
++    Check(resolved == &e.dynamic_properties[0], "legacy light-condition model array is resolved");
++    pt::game::Stage stage;
++    Check(resolved && pt::game::PushProperty(vm.State(), stage, file, *resolved), "legacy empty array is pushable");
++    lua_setglobal(vm.State(), "models");
++    Check(Run(vm, "local n=0; for _ in pairs(models) do n=n+1 end; assert(n==0)"),
++          "empty legacy model array supports the trap's pairs loop");
++    e.dynamic_properties[0].payload.resize(sizeof(pt::fox2::EntityLink));
++    Check(pt::game::FindScriptProperty(file, e, "modelData")->Count() == 1,
++          "populated legacy payload is preserved");
++    pt::fox2::Property canonical = legacy;
++    canonical.name = "modelData";
++    e.dynamic_properties.push_back(canonical);
++    Check(pt::game::FindScriptProperty(file, e, "modelData") == &e.dynamic_properties[1], "canonical property wins");
++    e.dynamic_properties.pop_back();
++    e.class_name = "StaticModel";
++    Check(!pt::game::FindScriptProperty(file, e, "modelData"), "other classes are unchanged");
++    e.class_name = "GeoModuleCondition";
++    e.dynamic_properties[0].type = pt::fox2::DataType::String;
++    Check(!pt::game::FindScriptProperty(file, e, "modelData"), "malformed legacy type is not aliased");
++    e.dynamic_properties[0].type = pt::fox2::DataType::EntityLink;
++    e.dynamic_properties[0].container = pt::fox2::Container::StaticArray;
++    Check(!pt::game::FindScriptProperty(file, e, "modelData"), "malformed legacy container is not aliased");
++    Check(!pt::game::FindScriptProperty(file, e, "missingData"), "unrelated missing properties remain absent");
++    return failures ? 1 : 0;
++}

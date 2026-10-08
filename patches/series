@@ -1,3 +1,14 @@
 0001-apple-build.patch
 0002-metal-renderer.patch
 0003-ipad-host.patch
+0004-asset-install.patch
+0005-game-validation.patch
+0006-render-telemetry.patch
+0007-native-verification-host.patch
+0008-mirror-reflected-light.patch
+0009-asset-repair.patch
+0010-native-touch-menu.patch
+0011-dependency-provenance.patch
+0012-fitted-screenshot.patch
+0013-ios-thermal-telemetry.patch
+0014-realtime-voice-input.patch

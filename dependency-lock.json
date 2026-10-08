@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "upstream_commit": "5c6307886f4470d8391bf49445a7c9124ea9d623",
+  "dependencies": {
+    "sdl3": {
+      "source_tree_sha256": "82810eaedbb3c11b2e8f7af99a59cbaf642b65965cff6eb41625d5c98ace0fea",
+      "kind": "git",
+      "url": "https://github.com/libsdl-org/SDL.git",
+      "commit": "fa2c02bb6e21974a89ea9824bc53c9932abe5f9c"
+    },
+    "zlib": {
+      "source_tree_sha256": "f3bcbcbcd9a48e6f4e928da8128200e30f04d8497885c5f4c33295503978a1dc",
+      "kind": "git",
+      "url": "https://github.com/madler/zlib.git",
+      "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498"
+    },
+    "whisper": {
+      "source_tree_sha256": "78d8ca7ac91b28a42e33b1e47926939315bcb8a214543cd47402c2bf5426d107",
+      "kind": "archive",
+      "url": "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.4.tar.gz",
+      "archive_sha256": "57e280cee375ab02425b806ad5146b99f6eb9357e3c2b31357c8a6af2e2e44ae"
+    },
+    "volk": {
+      "source_tree_sha256": "e41687a87a141a0a31f3e1432cc43379eff363e79dba874108af27a3ddb9da61",
+      "kind": "git",
+      "url": "https://github.com/zeux/volk.git",
+      "commit": "3ca312a4f38baa63d8006b6905abbeeb89c8087d"
+    },
+    "vma": {
+      "source_tree_sha256": "8bd6b65f0ab8f554783570c78c6207bf977e7ada651d4b2a72e49eb015ef80eb",
+      "kind": "git",
+      "url": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+      "commit": "3aa921224c154a0d2c43912bc88e1c42ce1f7607"
+    },
+    "glm": {
+      "source_tree_sha256": "8c4c16e8ab0b2757fdccca1f40ebcde5150328972fe3490a99b3e2d9d5318df6",
+      "kind": "git",
+      "url": "https://github.com/g-truc/glm.git",
+      "commit": "8d1fd52e5ab5590e2c81768ace50c72bae28f2ed"
+    },
+    "imgui": {
+      "source_tree_sha256": "2f3e956732454c1c9cf127045569ea4526c874462615f1268ee51b7036169521",
+      "kind": "git",
+      "url": "https://github.com/ocornut/imgui.git",
+      "commit": "b48d1afbe8ee8b238e2961dc363a949dd7304e23"
+    },
+    "stb": {
+      "source_tree_sha256": "8cf9e4154939f80adf8611f21716ccc898c51384026be5e83ff875d70fd65d35",
+      "kind": "git",
+      "url": "https://github.com/nothings/stb.git",
+      "commit": "2c980bb59875b0d32144a71867fbdebb2f77cd20"
+    },
+    "lua51": {
+      "source_tree_sha256": "58cc82272856aecd11aa3708c7fe7b25d29bbaa4a7aa0731c95a23af57a4363b",
+      "kind": "archive",
+      "url": "https://www.lua.org/ftp/lua-5.1.5.tar.gz",
+      "archive_sha256": "2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333"
+    },
+    "bc7enc": {
+      "source_tree_sha256": "7b225dd4d904cb573fc0b99830acb8e9c0e5f706ed940f2e4c84f5727f00fe66",
+      "kind": "archive",
+      "url": "https://codeload.github.com/richgel999/bc7enc_rdo/zip/b9438627eef73a1157e84201b6fa6eb2ffd6d9f0",
+      "archive_sha256": "e4b9328266568c8c345186bc246328b2dc6a248660b8c56d22e0771f00f83090"
+    },
+    "harfbuzz": {
+      "source_tree_sha256": "da9f48d2b9cd3d43c136186c2c28d8d518703ed0f130a2510e0f8b6a97097438",
+      "kind": "git",
+      "url": "https://github.com/harfbuzz/harfbuzz.git",
+      "commit": "c7a7457b7385f33178e8cf87615ca077a810bbe7"
+    },
+    "ogg": {
+      "source_tree_sha256": "8f46634f12093a999093978ba15bc6e8a77123a910b2d5a0ffe4ffe7f4518982",
+      "kind": "git",
+      "url": "https://github.com/xiph/ogg.git",
+      "commit": "e1774cd77f471443541596e09078e78fdc342e4f"
+    },
+    "vorbis": {
+      "source_tree_sha256": "6b5b690f27917b0516831d41c5ccec2058967fe32bf741134149b42155eeb8ee",
+      "kind": "git",
+      "url": "https://github.com/xiph/vorbis.git",
+      "commit": "0657aee69dec8508a0011f47f3b69d7538e9d262"
+    }
+  },
+  "voice_models": {
+    "ggml-base.en-q5_1.bin": "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f",
+    "ggml-silero-v6.2.0.bin": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+  }
+}

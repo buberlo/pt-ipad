@@ -9,6 +9,11 @@ Native ARM64 iPad port of the C++ [P.T. PC runtime](https://github.com/LoreanXav
 - [Build instructions](docs/BUILD.md)
 - [Approved implementation plan](docs/PLAN.md)
 - [Asset status](docs/ASSET_STATUS.md)
+- [Verified native asset installation](docs/ASSET_INSTALLATION.md)
+- [Gameplay validation](docs/GAMEPLAY_TESTS.md)
+- [Mirror flashlight validation](docs/MIRROR_REFLECTION.md)
+- [Physical-device testing](docs/DEVICE_TESTING.md)
+- [Measured device results and limits](docs/DEVICE_REPORT.md)
 - [Reused diagnostic provenance](reference/madeira-anyps5/PROVENANCE.md)
 - [Licenses and dependency boundaries](THIRD_PARTY.md)
 

@@ -1,0 +1,74 @@
+diff --git a/src/engine/platform/apple_host.h b/src/engine/platform/apple_host.h
+--- a/src/engine/platform/apple_host.h
++++ b/src/engine/platform/apple_host.h
+@@ -5,6 +5,10 @@
+ #endif
+ // iOS foreground state, including system permission dialogs that remove focus.
+ bool pt_apple_is_active(void);
++// OS-reported thermal pressure, not a temperature measurement. Static string.
++const char* pt_apple_thermal_state(void);
++// 1=enabled, 0=disabled, -1=unavailable. Never infer "off" from missing data.
++int pt_apple_low_power_mode(void);
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/engine/platform/apple_host.m b/src/engine/platform/apple_host.m
+--- a/src/engine/platform/apple_host.m
++++ b/src/engine/platform/apple_host.m
+@@ -14,6 +14,26 @@
+     });
+     return active;
+ }
++
++const char* pt_apple_thermal_state(void) {
++    if (@available(iOS 11.0, *)) {
++        switch ([NSProcessInfo processInfo].thermalState) {
++            case NSProcessInfoThermalStateNominal: return "nominal";
++            case NSProcessInfoThermalStateFair: return "fair";
++            case NSProcessInfoThermalStateSerious: return "serious";
++            case NSProcessInfoThermalStateCritical: return "critical";
++            default: return "unknown";
++        }
++    }
++    return "unavailable";
++}
++
++int pt_apple_low_power_mode(void) {
++    if (@available(iOS 9.0, *)) return [NSProcessInfo processInfo].lowPowerModeEnabled ? 1 : 0;
++    return -1;
++}
+ #else
+ bool pt_apple_is_active(void) { return true; }
++const char* pt_apple_thermal_state(void) { return "unavailable"; }
++int pt_apple_low_power_mode(void) { return -1; }
+ #endif
+diff --git a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -4302,6 +4302,14 @@
+                             app.settings.upscaling.quality, app.settings.upscaling.frame_generation,
+                             app.settings.display.vsync ? "on" : "off", app.settings.display.fps_limit, game.Floor().CurrentFloorName(),
+                             ui_ready && ui.MenuOpen() ? ", menu open" : "");
++#if PT_IOS
++                const int low_power = pt_apple_low_power_mode();
++                const auto& presentation = app.renderer.Context();
++                pt::LogInfo("host: thermal {}, low_power {}, actual_present_fps {}, observed_presentations {}",
++                            pt_apple_thermal_state(), low_power < 0 ? "unavailable" : low_power ? "on" : "off",
++                            presentation.DisplayFPS() >= 0.0 ? std::format("{:.3f}", presentation.DisplayFPS()) : "unavailable",
++                            presentation.DisplayedFrames());
++#endif
+                 status_start = status_now;
+                 status_frames = 0;
+                 status_gpu = 0.0;
+@@ -4429,6 +4437,11 @@
+         return 3;
+     }
+     pt::LogInfo("pt-port version {} ({})", pt::update::CurrentVersion(), pt::update::Platform());
++#if PT_IOS
++    const int low_power = pt_apple_low_power_mode();
++    pt::LogInfo("host: startup thermal {}, low_power {}", pt_apple_thermal_state(),
++                low_power < 0 ? "unavailable" : low_power ? "on" : "off");
++#endif
+ #ifdef PT_NATIVE_BUILD
+     pt::LogInfo("native application build {} source {}", PT_NATIVE_BUILD, PT_BUILD_ID);
+ #endif

@@ -1,0 +1,722 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -339,11 +339,17 @@
+   add_executable(pt_metal_capabilities_test tests/metal_capabilities_test.cpp)
+   target_include_directories(pt_metal_capabilities_test PRIVATE src)
+   target_link_libraries(pt_metal_capabilities_test PRIVATE PT_MoltenVK Vulkan::Headers)
++  add_executable(pt_asset_install_test tests/asset_install_test.cpp src/engine/platform/asset_install.cpp)
++  target_include_directories(pt_asset_install_test PRIVATE src)
+ endif()
+ 
+ # These host tests use synthetic fixtures only and keep them below the build tree.
+ if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+   enable_testing()
++  if(APPLE)
++    add_test(NAME pt_asset_install_test COMMAND pt_asset_install_test)
++    set_tests_properties(pt_asset_install_test PROPERTIES LABELS "asset-free")
++  endif()
+   foreach(test pt_tests pt_voice_match_test pt_graphics_preset_test pt_blur_sway_test pt_descriptor_budget_test pt_ipad_input_test)
+     add_test(NAME ${test} COMMAND ${test})
+     set_tests_properties(${test} PROPERTIES LABELS "asset-free")
+diff --git a/src/engine/platform/asset_install.cpp b/src/engine/platform/asset_install.cpp
+new file mode 100644
+index 0000000..c10185a
+--- /dev/null
++++ b/src/engine/platform/asset_install.cpp
+@@ -0,0 +1,406 @@
++#include "engine/platform/asset_install.h"
++#include <array>
++#include <charconv>
++#include <map>
++#include <memory>
++#include <set>
++#include <stdexcept>
++#include <vector>
++
++#if defined(__APPLE__)
++#include <CommonCrypto/CommonDigest.h>
++#include <cerrno>
++#include <cstring>
++#include <dirent.h>
++#include <fcntl.h>
++#include <sys/file.h>
++#include <sys/stat.h>
++#include <sys/stdio.h>
++#include <unistd.h>
++#endif
++
++namespace pt::assets {
++namespace {
++constexpr AssetSpec known[] = {
++    {"chunk1.psarc", 421978112, "f3cf67ef215065df01619fb0b3fd03fba7f465752ac4107e485dd0ea9dda41ef", true},
++    {"texture.qar", 892291044, "436bb79d9d47df685423a9afaed89a8be5e88a938347dd18e63e94398c6ed9b0", true},
++    {"pathid_list_ps4.bin", 93248, "6b4641bafe18f785229500454c5d44cba04cc1302fd8e187c53047a04d2633d0", false},
++};
++#if defined(__APPLE__)
++constexpr const char* manifest_name = "import-manifest.json";
++constexpr const char* current_name = "CUSA01127";
++constexpr const char* incoming_name = "CUSA01127.incoming";
++constexpr const char* previous_name = "CUSA01127.previous";
++constexpr uint64_t max_manifest = 1024 * 1024;
++struct Failure { InstallStatus status; std::string message; };
++[[noreturn]] void Invalid(std::string message) { throw Failure{InstallStatus::Invalid, std::move(message)}; }
++[[noreturn]] void Io(std::string_view operation) {
++    throw Failure{InstallStatus::IoError, std::string(operation) + ": " + std::strerror(errno)};
++}
++struct Fd {
++    int value = -1;
++    explicit Fd(int fd = -1) : value(fd) {}
++    ~Fd() { if (value >= 0) close(value); }
++    Fd(const Fd&) = delete;
++    Fd& operator=(const Fd&) = delete;
++    Fd(Fd&& other) noexcept : value(other.value) { other.value = -1; }
++};
++bool Cancelled(const InstallCallbacks& cb) {
++    try { return cb.cancelled && cb.cancelled(); }
++    catch (...) { return true; }
++}
++void CheckCancel(const InstallCallbacks& cb) {
++    if (Cancelled(cb)) throw Failure{InstallStatus::Cancelled, "Installation cancelled; existing assets were preserved"};
++}
++void Progress(const InstallCallbacks& cb, InstallPhase phase, std::string_view name = {}, uint64_t done = 0, uint64_t total = 0) {
++    try { if (cb.progress) cb.progress({phase, name, done, total}); }
++    catch (...) { throw Failure{InstallStatus::Cancelled, "Installation callback stopped the operation"}; }
++    CheckCancel(cb);
++}
++bool SafeName(std::string_view name) {
++    return !name.empty() && name != "." && name != ".." && name.find_first_of("/\\:\0", 0, 4) == std::string_view::npos;
++}
++bool Digest(std::string_view text) {
++    if (text.size() != 64) return false;
++    for (char c : text) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
++    return true;
++}
++void ValidateCatalogue(std::span<const AssetSpec> catalogue) {
++    if (catalogue.empty() || catalogue.size() > 32) Invalid("Invalid asset catalogue");
++    std::set<std::string_view> names;
++    for (const auto& asset : catalogue) {
++        if (!SafeName(asset.name) || asset.name == manifest_name || asset.name == "source.txt" ||
++            !Digest(asset.sha256) || !names.insert(asset.name).second) Invalid("Invalid asset catalogue entry");
++    }
++}
++
++// Bounded JSON reader: duplicate keys, invalid escapes, trailing tokens and non-JSON
++// numbers are refused. Unknown host-audit fields are parsed but never interpreted as paths.
++struct Json {
++    enum Kind { Object, Array, String, Number, Boolean, Null } kind = Null;
++    std::string text;
++    std::map<std::string, Json> members;
++};
++class JsonReader {
++    std::string_view text_;
++    size_t at_ = 0, nodes_ = 0;
++    void Space() { while (at_ < text_.size() && (text_[at_] == ' ' || text_[at_] == '\n' || text_[at_] == '\r' || text_[at_] == '\t')) ++at_; }
++    char Take() { if (at_ == text_.size()) Invalid("Truncated manifest JSON"); return text_[at_++]; }
++    void Want(char c) { Space(); if (Take() != c) Invalid("Malformed manifest JSON"); }
++    uint32_t Hex4() {
++        uint32_t value = 0;
++        for (int i = 0; i != 4; ++i) {
++            char c = Take();
++            int n = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
++            if (n < 0) Invalid("Invalid JSON unicode escape");
++            value = value * 16 + n;
++        }
++        return value;
++    }
++    static void Utf8(std::string& out, uint32_t c) {
++        if (c < 0x80) out += char(c);
++        else if (c < 0x800) { out += char(0xc0 | (c >> 6)); out += char(0x80 | (c & 63)); }
++        else if (c < 0x10000) { out += char(0xe0 | (c >> 12)); out += char(0x80 | ((c >> 6) & 63)); out += char(0x80 | (c & 63)); }
++        else { out += char(0xf0 | (c >> 18)); out += char(0x80 | ((c >> 12) & 63)); out += char(0x80 | ((c >> 6) & 63)); out += char(0x80 | (c & 63)); }
++    }
++    std::string String() {
++        Want('"'); std::string out;
++        for (;;) {
++            auto c = static_cast<unsigned char>(Take());
++            if (c == '"') return out;
++            if (c < 0x20) Invalid("Control byte in JSON string");
++            if (c == '\\') {
++                char escape = Take();
++                switch (escape) {
++                    case '"': case '\\': case '/': out += escape; break;
++                    case 'b': out += '\b'; break; case 'f': out += '\f'; break;
++                    case 'n': out += '\n'; break; case 'r': out += '\r'; break; case 't': out += '\t'; break;
++                    case 'u': {
++                        uint32_t code = Hex4();
++                        if (code >= 0xd800 && code <= 0xdbff) {
++                            if (Take() != '\\' || Take() != 'u') Invalid("Unpaired JSON surrogate");
++                            uint32_t low = Hex4();
++                            if (low < 0xdc00 || low > 0xdfff) Invalid("Unpaired JSON surrogate");
++                            code = 0x10000 + ((code - 0xd800) << 10) + low - 0xdc00;
++                        } else if (code >= 0xdc00 && code <= 0xdfff) Invalid("Unpaired JSON surrogate");
++                        Utf8(out, code); break;
++                    }
++                    default: Invalid("Invalid JSON string escape");
++                }
++            } else if (c < 0x80) out += char(c);
++            else {
++                int count = c >= 0xc2 && c <= 0xdf ? 1 : c >= 0xe0 && c <= 0xef ? 2 : c >= 0xf0 && c <= 0xf4 ? 3 : -1;
++                if (count < 0) Invalid("Invalid UTF-8 in manifest");
++                uint32_t code = c & ((1 << (6 - count)) - 1);
++                for (int i = 0; i < count; ++i) {
++                    unsigned char tail = Take();
++                    if ((tail & 0xc0) != 0x80) Invalid("Invalid UTF-8 in manifest");
++                    code = (code << 6) | (tail & 63);
++                }
++                if (code < (count == 1 ? 0x80u : count == 2 ? 0x800u : 0x10000u) || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) Invalid("Invalid UTF-8 in manifest");
++                Utf8(out, code);
++            }
++        }
++    }
++    Json Read(unsigned depth) {
++        if (depth > 32 || ++nodes_ > 16384) Invalid("Manifest JSON exceeds structural limits");
++        Space(); if (at_ == text_.size()) Invalid("Truncated manifest JSON");
++        Json value;
++        char c = text_[at_];
++        if (c == '"') { value.kind = Json::String; value.text = String(); return value; }
++        if (c == '{' || c == '[') {
++            value.kind = c == '{' ? Json::Object : Json::Array;
++            char end = c == '{' ? '}' : ']'; ++at_; Space();
++            if (at_ < text_.size() && text_[at_] == end) { ++at_; return value; }
++            for (;;) {
++                std::string key;
++                if (c == '{') { key = String(); Want(':'); }
++                Json child = Read(depth + 1);
++                if (c == '{' && !value.members.emplace(key, std::move(child)).second) Invalid("Duplicate manifest JSON key");
++                Space(); char next = Take();
++                if (next == end) return value;
++                if (next != ',') Invalid("Malformed manifest JSON container");
++            }
++        }
++        for (auto literal : {"true", "false", "null"}) {
++            if (text_.substr(at_, std::strlen(literal)) == literal) {
++                value.kind = literal[0] == 'n' ? Json::Null : Json::Boolean;
++                value.text = literal; at_ += value.text.size(); return value;
++            }
++        }
++        size_t start = at_;
++        if (text_[at_] == '-') ++at_;
++        auto digit = [&] { return at_ < text_.size() && text_[at_] >= '0' && text_[at_] <= '9'; };
++        if (!digit()) Invalid("Invalid manifest JSON number");
++        if (text_[at_] == '0') ++at_;
++        else while (digit()) ++at_;
++        if (at_ < text_.size() && text_[at_] == '.') { ++at_; if (!digit()) Invalid("Invalid JSON fraction"); while (digit()) ++at_; }
++        if (at_ < text_.size() && (text_[at_] == 'e' || text_[at_] == 'E')) {
++            ++at_; if (at_ < text_.size() && (text_[at_] == '+' || text_[at_] == '-')) ++at_;
++            if (!digit()) Invalid("Invalid JSON exponent"); while (digit()) ++at_;
++        }
++        value.kind = Json::Number; value.text = text_.substr(start, at_ - start); return value;
++    }
++public:
++    explicit JsonReader(std::string_view text) : text_(text) {}
++    Json Parse() { auto value = Read(0); Space(); if (at_ != text_.size()) Invalid("Trailing manifest JSON data"); return value; }
++};
++const Json& Member(const Json& object, const std::string& key, Json::Kind kind) {
++    auto it = object.members.find(key);
++    if (object.kind != Json::Object || it == object.members.end() || it->second.kind != kind) Invalid("Missing or invalid manifest field: " + key);
++    return it->second;
++}
++struct Stamp {
++    dev_t device; ino_t inode; off_t size; timespec modified, changed;
++    bool operator==(const Stamp& b) const {
++        return device == b.device && inode == b.inode && size == b.size && modified.tv_sec == b.modified.tv_sec && modified.tv_nsec == b.modified.tv_nsec && changed.tv_sec == b.changed.tv_sec && changed.tv_nsec == b.changed.tv_nsec;
++    }
++};
++Stamp Stat(const struct stat& s) { return {s.st_dev, s.st_ino, s.st_size, s.st_mtimespec, s.st_ctimespec}; }
++struct stat Fstat(int fd) { struct stat s{}; if (fstat(fd, &s)) Io("Inspect opened asset"); return s; }
++Fd OpenDirectory(int parent, const char* name) {
++    int fd = openat(parent, name, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
++    if (fd < 0) { if (errno == ELOOP || errno == ENOTDIR) Invalid("Installation path must be a real directory"); Io("Open installation directory"); }
++    return Fd(fd);
++}
++bool Exists(int parent, const char* name) {
++    struct stat s{};
++    if (!fstatat(parent, name, &s, AT_SYMLINK_NOFOLLOW)) return true;
++    if (errno == ENOENT) return false;
++    Io("Inspect installation path");
++}
++Fd OpenFile(int directory, const char* name, uint64_t maximum) {
++    int fd = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
++    if (fd < 0) Invalid(std::string("Cannot read regular asset: ") + name);
++    Fd file(fd); auto s = Fstat(fd);
++    if (!S_ISREG(s.st_mode) || s.st_nlink != 1 || s.st_size < 0 || uint64_t(s.st_size) > maximum) Invalid(std::string("Unsafe or oversized asset: ") + name);
++    return file;
++}
++ssize_t Read(int fd, void* data, size_t count) {
++    ssize_t result;
++    do { result = read(fd, data, count); } while (result < 0 && errno == EINTR);
++    if (result < 0) Io("Read asset");
++    return result;
++}
++struct Verified {
++    Stamp directory;
++    std::map<std::string, Stamp> files;
++};
++void CheckUnchanged(int parent, const char* name, const Verified& verified) {
++    auto dir = OpenDirectory(parent, name);
++    if (!(Stat(Fstat(dir.value)) == verified.directory)) Invalid("Installation directory changed during verification");
++    for (const auto& [file, stamp] : verified.files) {
++        struct stat s{};
++        if (fstatat(dir.value, file.c_str(), &s, AT_SYMLINK_NOFOLLOW) || !S_ISREG(s.st_mode) || s.st_nlink != 1 || !(Stat(s) == stamp)) Invalid("Asset changed during verification: " + file);
++    }
++}
++Verified Verify(int directory, std::span<const AssetSpec> catalogue, const InstallCallbacks& cb, bool hash = true) {
++    CheckCancel(cb);
++    Verified verified{Stat(Fstat(directory)), {}};
++    std::map<std::string, const AssetSpec*> expected;
++    for (const auto& item : catalogue) expected.emplace(item.name, &item);
++    std::set<std::string> found;
++    Fd enumeration(openat(directory, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY));
++    if (enumeration.value < 0) Io("Open installation listing");
++    DIR* listing = fdopendir(enumeration.value);
++    if (!listing) Io("List installation");
++    enumeration.value = -1;
++    std::unique_ptr<DIR, decltype(&closedir)> closer(listing, closedir);
++    for (;;) {
++        errno = 0; auto* entry = readdir(listing);
++        if (!entry) { if (errno) Io("List installation"); break; }
++        std::string name(entry->d_name);
++        if (name == "." || name == "..") continue;
++        if (!expected.contains(name) && name != manifest_name && name != "source.txt") Invalid("Unexpected file in asset installation: " + name);
++        found.insert(name);
++    }
++    auto manifest = OpenFile(directory, manifest_name, max_manifest);
++    auto manifest_stamp = Stat(Fstat(manifest.value));
++    std::string bytes(static_cast<size_t>(manifest_stamp.size), '\0');
++    size_t offset = 0;
++    while (offset != bytes.size()) { auto n = Read(manifest.value, bytes.data() + offset, bytes.size() - offset); if (!n) Invalid("Truncated installation manifest"); offset += n; }
++    if (!(Stat(Fstat(manifest.value)) == manifest_stamp)) Invalid("Manifest changed while reading");
++    verified.files.emplace(manifest_name, manifest_stamp);
++    auto json = JsonReader(bytes).Parse();
++    if (Member(json, "schema", Json::String).text != "pt-ipad-assets-v1") Invalid("Unsupported installation manifest schema");
++    const auto& assets = Member(json, "assets", Json::Object);
++    for (const auto& [name, value] : assets.members) if (!expected.contains(name)) Invalid("Unknown or unsafe manifest asset name");
++    std::vector<unsigned char> buffer(256 * 1024);
++    for (const auto& asset : catalogue) {
++        std::string name(asset.name);
++        bool listed = assets.members.contains(name), present = found.contains(name);
++        if (!listed && !present && !asset.required) continue;
++        if (!listed || !present) Invalid("Missing asset or manifest entry: " + name);
++        const auto& record = Member(assets, name, Json::Object);
++        const auto& size = Member(record, "bytes", Json::Number).text;
++        uint64_t length = 0;
++        auto number = std::from_chars(size.data(), size.data() + size.size(), length);
++        if (number.ec != std::errc() || number.ptr != size.data() + size.size() || length != asset.bytes || Member(record, "sha256", Json::String).text != asset.sha256) Invalid("Manifest does not match the compiled asset catalogue: " + name);
++        auto file = OpenFile(directory, name.c_str(), asset.bytes);
++        auto before = Fstat(file.value);
++        if (uint64_t(before.st_size) != asset.bytes) Invalid("Incorrect asset length: " + name);
++        if (hash) {
++            CC_SHA256_CTX context; CC_SHA256_Init(&context);
++            uint64_t done = 0;
++            Progress(cb, InstallPhase::Verifying, name, done, asset.bytes);
++            for (;;) {
++                CheckCancel(cb);
++                auto count = Read(file.value, buffer.data(), buffer.size());
++                if (!count) break;
++                done += count;
++                if (done > asset.bytes) Invalid("Asset grew while hashing: " + name);
++                CC_SHA256_Update(&context, buffer.data(), static_cast<CC_LONG>(count));
++                Progress(cb, InstallPhase::Verifying, name, done, asset.bytes);
++            }
++            std::array<unsigned char, CC_SHA256_DIGEST_LENGTH> digest{};
++            CC_SHA256_Final(digest.data(), &context);
++            static constexpr char hex[] = "0123456789abcdef";
++            std::string text;
++            for (auto byte : digest) { text += hex[byte >> 4]; text += hex[byte & 15]; }
++            if (done != asset.bytes || text != asset.sha256) Invalid("SHA-256 mismatch: " + name);
++        }
++        if (!(Stat(before) == Stat(Fstat(file.value)))) Invalid("Asset changed while hashing: " + name);
++        verified.files.emplace(name, Stat(before));
++    }
++    if (found.contains("source.txt")) {
++        auto source = OpenFile(directory, "source.txt", 65536);
++        verified.files.emplace("source.txt", Stat(Fstat(source.value)));
++    }
++    if (!(Stat(Fstat(directory)) == verified.directory)) Invalid("Installation directory changed during verification");
++    return verified;
++}
++InstallResult Error(const Failure& failure) { return {failure.status, {}, failure.message}; }
++#endif
++} // namespace
++
++std::span<const AssetSpec> KnownUsAssets() { return known; }
++InstallResult PrepareUsInstallation(const std::filesystem::path& documents, const InstallCallbacks& callbacks) {
++    return PrepareInstallation(documents, KnownUsAssets(), callbacks);
++}
++InstallResult VerifyInstallation(const std::filesystem::path& directory, std::span<const AssetSpec> catalogue, const InstallCallbacks& callbacks) {
++#if defined(__APPLE__)
++    try {
++        ValidateCatalogue(catalogue);
++        auto parent = OpenDirectory(AT_FDCWD, directory.parent_path().c_str());
++        auto dir = OpenDirectory(parent.value, directory.filename().c_str());
++        auto verified = Verify(dir.value, catalogue, callbacks);
++        CheckUnchanged(parent.value, directory.filename().c_str(), verified);
++        return {InstallStatus::Ready, directory, "Installation hashes verified"};
++    } catch (const Failure& failure) { return Error(failure); }
++    catch (const std::exception&) { return {InstallStatus::IoError, {}, "Installation verification failed"}; }
++#else
++    return {InstallStatus::Unsupported, {}, "Native installation verification requires Apple APIs"};
++#endif
++}
++InstallResult PrepareInstallation(const std::filesystem::path& documents, std::span<const AssetSpec> catalogue, const InstallCallbacks& callbacks) {
++#if defined(__APPLE__)
++    try {
++        ValidateCatalogue(catalogue);
++        // Resolve only the trusted OS-provided Documents root (iOS /var is a system
++        // symlink). All installation children are opened relative to its descriptor.
++        auto root = OpenDirectory(AT_FDCWD, documents.c_str());
++        Fd lock(openat(root.value, ".pt-assets.lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
++        if (lock.value < 0) Io("Open installation lock");
++        auto lock_stat = Fstat(lock.value);
++        if (!S_ISREG(lock_stat.st_mode) || lock_stat.st_nlink != 1) Invalid("Invalid installation lock file");
++        if (flock(lock.value, LOCK_EX | LOCK_NB)) {
++            if (errno == EWOULDBLOCK) return {InstallStatus::Busy, {}, "Another installation operation is in progress"};
++            Io("Lock installation");
++        }
++        CheckCancel(callbacks);
++        bool current = Exists(root.value, current_name), incoming = Exists(root.value, incoming_name);
++        if (!incoming) {
++            if (!current) return {InstallStatus::Missing, {}, "Copy a verified installation to CUSA01127.incoming in Documents"};
++            auto dir = OpenDirectory(root.value, current_name);
++            auto verified = Verify(dir.value, catalogue, callbacks);
++            CheckUnchanged(root.value, current_name, verified);
++            return {InstallStatus::Ready, documents / current_name, "Installation hashes verified"};
++        }
++        Verified staged{};
++        try {
++            auto dir = OpenDirectory(root.value, incoming_name);
++            staged = Verify(dir.value, catalogue, callbacks);
++            CheckUnchanged(root.value, incoming_name, staged);
++        } catch (const Failure& rejected) {
++            if (rejected.status != InstallStatus::Invalid || !current) throw;
++            auto dir = OpenDirectory(root.value, current_name);
++            auto existing = Verify(dir.value, catalogue, callbacks);
++            CheckUnchanged(root.value, current_name, existing);
++            return {InstallStatus::Ready, documents / current_name, "Incoming installation rejected: " + rejected.message, true};
++        }
++        Verified existing{};
++        if (current) {
++            if (Exists(root.value, previous_name)) return {InstallStatus::Busy, {}, "Prior installation backup exists; preserve or remove it before replacement"};
++            auto dir = OpenDirectory(root.value, current_name);
++            // Check ownership/shape before replacement. A damaged owned install may
++            // be repaired, but an unrelated directory or save file is never displaced.
++            existing = Verify(dir.value, catalogue, callbacks, false);
++        }
++        Progress(callbacks, InstallPhase::BeforeActivation);
++        CheckUnchanged(root.value, incoming_name, staged);
++        if (current) CheckUnchanged(root.value, current_name, existing);
++        CheckCancel(callbacks);
++        unsigned flags = current ? RENAME_SWAP : RENAME_EXCL;
++        if (renameatx_np(root.value, incoming_name, root.value, current_name, flags)) Io("Atomically activate installation");
++        try {
++            Progress(callbacks, InstallPhase::AfterExchange);
++            if (current && renameatx_np(root.value, incoming_name, root.value, previous_name, RENAME_EXCL)) Io("Retain previous installation");
++        } catch (...) {
++            // No cancellation points inside rollback: restore the original names in
++            // one filesystem operation even when a callback itself threw.
++            int rollback = current ? renameatx_np(root.value, incoming_name, root.value, current_name, RENAME_SWAP)
++                                   : renameatx_np(root.value, current_name, root.value, incoming_name, RENAME_EXCL);
++            if (rollback) throw Failure{InstallStatus::IoError, "Activation rollback failed; directories retained for recovery"};
++            throw;
++        }
++        // Commit has completed. Late cancellation belongs to the next operation.
++        // The previous directory is intentionally retained; no recursive deletion.
++        fsync(root.value);
++        return {InstallStatus::Activated, documents / current_name, current ? "Installation activated; prior assets retained in CUSA01127.previous" : "Installation activated"};
++    } catch (const Failure& failure) { return Error(failure); }
++    catch (const std::exception&) { return {InstallStatus::IoError, {}, "Installation failed; inspect retained directories before retrying"}; }
++#else
++    return {InstallStatus::Unsupported, {}, "Native installation activation requires Apple APIs"};
++#endif
++}
++} // namespace pt::assets
+diff --git a/src/engine/platform/asset_install.h b/src/engine/platform/asset_install.h
+new file mode 100644
+index 0000000..116d140
+--- /dev/null
++++ b/src/engine/platform/asset_install.h
+@@ -0,0 +1,54 @@
++#pragma once
++#include <cstdint>
++#include <filesystem>
++#include <functional>
++#include <span>
++#include <string>
++#include <string_view>
++
++namespace pt::assets {
++enum class InstallStatus { Ready, Activated, Missing, Invalid, Cancelled, Busy, IoError, Unsupported };
++enum class InstallPhase { Verifying, BeforeActivation, AfterExchange, RollingBack };
++struct InstallProgress {
++    InstallPhase phase;
++    std::string_view file;
++    uint64_t completed = 0;
++    uint64_t total = 0;
++};
++struct InstallCallbacks {
++    // Called on the invoking thread. Return quickly; callbacks must not change installation files.
++    std::function<bool()> cancelled;
++    std::function<void(const InstallProgress&)> progress;
++};
++struct InstallResult {
++    InstallStatus status = InstallStatus::Invalid;
++    std::filesystem::path directory;
++    std::string message;
++    bool staging_rejected = false;
++    bool ready() const { return status == InstallStatus::Ready || status == InstallStatus::Activated; }
++};
++struct AssetSpec {
++    std::string_view name;
++    uint64_t bytes;
++    std::string_view sha256;
++    bool required;
++};
++std::span<const AssetSpec> KnownUsAssets();
++
++// Run on a worker while UIKit continues pumping events. Every call hashes the files;
++// editable manifests and metadata-only caches never establish content authenticity.
++// The OS-provided Documents root is trusted; children must be regular files with a single link.
++// A verified incoming directory is atomically installed. On replacement the prior
++// directory is retained as CUSA01127.previous. Saves outside these directories are untouched.
++InstallResult PrepareUsInstallation(const std::filesystem::path& documents,
++                                    const InstallCallbacks& callbacks = {});
++
++// Generic catalogue entry points support small synthetic host fixtures and read-only
++// verification. Production launch uses PrepareUsInstallation's compiled catalogue.
++InstallResult PrepareInstallation(const std::filesystem::path& documents,
++                                  std::span<const AssetSpec> catalogue,
++                                  const InstallCallbacks& callbacks = {});
++InstallResult VerifyInstallation(const std::filesystem::path& directory,
++                                 std::span<const AssetSpec> catalogue,
++                                 const InstallCallbacks& callbacks = {});
++} // namespace pt::assets
+diff --git a/tests/asset_install_test.cpp b/tests/asset_install_test.cpp
+new file mode 100644
+index 0000000..db63929
+--- /dev/null
++++ b/tests/asset_install_test.cpp
+@@ -0,0 +1,223 @@
++#include "engine/platform/asset_install.h"
++#include <array>
++#include <filesystem>
++#include <fstream>
++#include <iostream>
++#include <stdexcept>
++#include <string>
++#include <unistd.h>
++
++namespace fs = std::filesystem;
++using namespace pt::assets;
++namespace {
++// Digests independently generated with Python hashlib, including a multi-block stream.
++constexpr AssetSpec fixture[] = {
++    {"chunk1.psarc", 3, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", true},
++    {"texture.qar", 262163, "ba158e343d6f23c84d5eb7c5ebaccf62da47e6d06c928925c11f1228194872b2", true},
++    {"pathid_list_ps4.bin", 8, "ec91fdd9256cb75ae611249b50cb7eb16533f0fa91b86239ec1d439a1ea033b8", false},
++};
++void Expect(bool value, std::string_view message) { if (!value) throw std::runtime_error(std::string(message)); }
++void Write(const fs::path& path, std::string_view contents) {
++    std::ofstream file(path, std::ios::binary | std::ios::trunc);
++    file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
++    if (!file) throw std::runtime_error("fixture write failed");
++}
++std::string Read(const fs::path& path) {
++    std::ifstream file(path, std::ios::binary);
++    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
++}
++std::string Manifest(bool optional = true) {
++    std::string text = R"({"schema":"pt-ipad-assets-v1","source_package":{"sfo":{"TITLE_ID":"CUSA01127"}},"assets":{)";
++    for (size_t i = 0; i < (optional ? 3 : 2); ++i) {
++        if (i) text += ',';
++        const auto& asset = fixture[i];
++        text += '"' + std::string(asset.name) + R"(":{"bytes":)" + std::to_string(asset.bytes) + R"(,"sha256":")" + std::string(asset.sha256) + R"(","matches_known_us_data":true})";
++    }
++    return text + "}}";
++}
++void Assets(const fs::path& directory, bool optional = true) {
++    fs::create_directory(directory);
++    Write(directory / "chunk1.psarc", "abc");
++    Write(directory / "texture.qar", std::string(fixture[1].bytes, 'x'));
++    if (optional) Write(directory / "pathid_list_ps4.bin", "optional");
++    Write(directory / "import-manifest.json", Manifest(optional));
++}
++struct Temp {
++    fs::path root;
++    Temp() {
++        auto candidate = fs::temp_directory_path() / "pt-asset-install-test-XXXXXX";
++        std::string text = candidate.string();
++        if (!mkdtemp(text.data())) throw std::runtime_error("mkdtemp failed");
++        root = text;
++        fs::create_directory(root / "saves");
++        Write(root / "saves/keep.bin", "save unchanged");
++    }
++    ~Temp() { std::error_code error; fs::remove_all(root, error); }
++    void SavesIntact() { Expect(Read(root / "saves/keep.bin") == "save unchanged", "save directory modified"); }
++};
++void Replace(std::string& text, std::string_view before, std::string_view after) {
++    auto at = text.find(before);
++    Expect(at != std::string::npos, "missing fixture substring");
++    text.replace(at, before.size(), after);
++}
++int cases = 0;
++template<class F> void Test(const char* name, F fn) {
++    fn(); ++cases; std::cout << "PASS " << name << '\n';
++}
++} // namespace
++
++int main(int argc, char** argv) {
++    try {
++        if (argc == 2) {
++            auto result = VerifyInstallation(argv[1], KnownUsAssets());
++            std::cout << result.message << '\n';
++            return result.ready() ? 0 : 1;
++        }
++        Test("missing installation", [] {
++            Temp t;
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Missing, "missing not classified");
++            t.SavesIntact();
++        });
++        Test("manifest and streaming hashes including optional path list", [] {
++            Temp t; Assets(t.root / "CUSA01127");
++            int chunks = 0;
++            InstallCallbacks cb; cb.progress = [&](const auto& p) { if (p.file == "texture.qar" && p.completed) ++chunks; };
++            Expect(PrepareInstallation(t.root, fixture, cb).ready(), "valid installation rejected");
++            Expect(chunks == 2, "large file did not stream in bounded chunks");
++            Expect(VerifyInstallation(t.root / "CUSA01127", KnownUsAssets()).status == InstallStatus::Invalid, "synthetic files accepted as US assets");
++            t.SavesIntact();
++        });
++        Test("optional path list absent", [] {
++            Temp t; Assets(t.root / "CUSA01127", false);
++            Expect(PrepareInstallation(t.root, fixture).ready(), "optional path list required");
++        });
++        Test("first activation", [] {
++            Temp t; Assets(t.root / "CUSA01127.incoming");
++            auto result = PrepareInstallation(t.root, fixture);
++            Expect(result.status == InstallStatus::Activated && result.directory == t.root / "CUSA01127", "first activation failed");
++            Expect(!fs::exists(t.root / "CUSA01127.incoming") && !fs::exists(t.root / "CUSA01127.previous"), "first activation left transaction directories");
++            Expect(VerifyInstallation(result.directory, fixture).ready(), "activated assets invalid");
++            t.SavesIntact();
++        });
++        Test("atomic replacement retains previous directory", [] {
++            Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming");
++            Write(t.root / "CUSA01127/source.txt", "previous");
++            Write(t.root / "CUSA01127.incoming/source.txt", "next");
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Activated, "replacement failed");
++            Expect(Read(t.root / "CUSA01127/source.txt") == "next", "new installation not active");
++            Expect(Read(t.root / "CUSA01127.previous/source.txt") == "previous", "previous installation lost");
++            t.SavesIntact();
++        });
++        Test("bad incoming leaves verified current playable", [] {
++            Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming");
++            Write(t.root / "CUSA01127.incoming/chunk1.psarc", "xyz");
++            auto result = PrepareInstallation(t.root, fixture);
++            Expect(result.status == InstallStatus::Ready && result.staging_rejected, "valid current installation not retained");
++            Expect(Read(t.root / "CUSA01127/chunk1.psarc") == "abc", "bad incoming replaced current");
++        });
++        Test("malformed manifest matrix", [] {
++            Temp t; Assets(t.root / "CUSA01127");
++            const auto valid = Manifest();
++            std::vector<std::string> bad = {"", "[]", "{}", valid + "x", "{\"schema\":\"pt-ipad-assets-v1\",\"schema\":\"pt-ipad-assets-v1\",\"assets\":{}}", std::string(1024 * 1024 + 1, ' ')};
++            for (auto [before, after] : std::array<std::pair<const char*, const char*>, 13>{{
++                {"pt-ipad-assets-v1", "other-schema"}, {"\"bytes\":3", "\"bytes\":-3"},
++                {"\"bytes\":3", "\"bytes\":3.0"}, {"\"bytes\":3", "\"bytes\":3e0"},
++                {"\"bytes\":3", "\"bytes\":03"}, {"\"bytes\":3", "\"bytes\":18446744073709551616"},
++                {"chunk1.psarc", "../chunk1.psarc"}, {"chunk1.psarc", "C:\\\\chunk1.psarc"},
++                {"chunk1.psarc", "chunk1.psarc\\u0000tail"}, {"chunk1.psarc", "\\q"},
++                {"chunk1.psarc", "\\ud800"}, {"chunk1.psarc", "\\udc00"},
++                {"ba7816bf", "BA7816BF"}
++            }}) { auto malformed = valid; Replace(malformed, before, after); bad.push_back(malformed); }
++            for (const auto& malformed : bad) {
++                Write(t.root / "CUSA01127/import-manifest.json", malformed);
++                Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "malformed JSON accepted");
++            }
++            auto escaped = valid; Replace(escaped, "chunk1.psarc", "\\u0063hunk1.psarc");
++            Write(t.root / "CUSA01127/import-manifest.json", escaped);
++            Expect(PrepareInstallation(t.root, fixture).ready(), "valid JSON unicode escape rejected");
++        });
++        Test("wrong length and missing required file", [] {
++            Temp t; Assets(t.root / "CUSA01127");
++            Write(t.root / "CUSA01127/chunk1.psarc", "abcd");
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "wrong length accepted");
++            fs::remove(t.root / "CUSA01127/chunk1.psarc");
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "missing required file accepted");
++        });
++        Test("unexpected files and saves cannot be displaced", [] {
++            Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming");
++            Write(t.root / "CUSA01127/save.dat", "save");
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "unrelated current file displaced");
++            Expect(Read(t.root / "CUSA01127/save.dat") == "save", "unrelated current file lost");
++        });
++        Test("symlink and hard-link assets rejected", [] {
++            Temp t; Assets(t.root / "CUSA01127");
++            auto path = t.root / "CUSA01127/chunk1.psarc";
++            fs::rename(path, t.root / "external"); fs::create_symlink(t.root / "external", path);
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "symlink asset accepted");
++            fs::remove(path); fs::create_hard_link(t.root / "external", path);
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "hard-linked asset accepted");
++            Expect(Read(t.root / "external") == "abc", "external target modified");
++        });
++        Test("symlink directory rejected", [] {
++            Temp t; Assets(t.root / "external"); fs::create_directory_symlink(t.root / "external", t.root / "CUSA01127.incoming");
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "symlink installation accepted");
++        });
++        Test("mutation during hash detected", [] {
++            Temp t; Assets(t.root / "CUSA01127.incoming");
++            InstallCallbacks cb; bool changed = false;
++            cb.progress = [&](const auto& p) { if (!changed && p.file == "texture.qar" && p.completed) { changed = true; Write(t.root / "CUSA01127.incoming/texture.qar", std::string(fixture[1].bytes, 'y')); } };
++            Expect(PrepareInstallation(t.root, fixture, cb).status == InstallStatus::Invalid, "mid-hash mutation accepted");
++            Expect(!fs::exists(t.root / "CUSA01127"), "mutating stage published");
++        });
++        Test("cancellation during hash and before activation", [] {
++            for (auto phase : {InstallPhase::Verifying, InstallPhase::BeforeActivation}) {
++                Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming");
++                bool cancel = false; InstallCallbacks cb;
++                cb.cancelled = [&] { return cancel; };
++                cb.progress = [&](const auto& p) { if (p.phase == phase) cancel = true; };
++                Expect(PrepareInstallation(t.root, fixture, cb).status == InstallStatus::Cancelled, "cancellation ignored");
++                Expect(fs::exists(t.root / "CUSA01127.incoming") && VerifyInstallation(t.root / "CUSA01127", fixture).ready(), "cancellation lost original installation");
++                t.SavesIntact();
++            }
++        });
++        Test("cancellation after exchange rolls back first and replacement activation", [] {
++            for (bool prior : {false, true}) {
++                Temp t; if (prior) { Assets(t.root / "CUSA01127"); Write(t.root / "CUSA01127/source.txt", "previous"); }
++                Assets(t.root / "CUSA01127.incoming"); Write(t.root / "CUSA01127.incoming/source.txt", "next");
++                bool cancel = false; InstallCallbacks cb; cb.cancelled = [&] { return cancel; };
++                cb.progress = [&](const auto& p) { if (p.phase == InstallPhase::AfterExchange) cancel = true; };
++                Expect(PrepareInstallation(t.root, fixture, cb).status == InstallStatus::Cancelled, "post-exchange cancellation ignored");
++                Expect(Read(t.root / "CUSA01127.incoming/source.txt") == "next", "cancelled stage lost");
++                Expect(prior ? Read(t.root / "CUSA01127/source.txt") == "previous" : !fs::exists(t.root / "CUSA01127"), "activation not rolled back");
++            }
++        });
++        Test("backup publication failure rolls back exchange", [] {
++            Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming");
++            Write(t.root / "CUSA01127/source.txt", "previous"); Write(t.root / "CUSA01127.incoming/source.txt", "next");
++            InstallCallbacks cb;
++            cb.progress = [&](const auto& p) { if (p.phase == InstallPhase::AfterExchange) fs::create_directory(t.root / "CUSA01127.previous"); };
++            Expect(PrepareInstallation(t.root, fixture, cb).status == InstallStatus::IoError, "backup collision did not fail");
++            Expect(Read(t.root / "CUSA01127/source.txt") == "previous" && Read(t.root / "CUSA01127.incoming/source.txt") == "next", "failed backup publication did not roll back");
++        });
++        Test("callback exception rolls back exchange", [] {
++            Temp t; Assets(t.root / "CUSA01127.incoming");
++            InstallCallbacks cb; cb.progress = [](const auto& p) { if (p.phase == InstallPhase::AfterExchange) throw std::runtime_error("stopped"); };
++            Expect(PrepareInstallation(t.root, fixture, cb).status == InstallStatus::Cancelled, "throwing callback unhandled");
++            Expect(!fs::exists(t.root / "CUSA01127") && fs::exists(t.root / "CUSA01127.incoming"), "callback exception failed rollback");
++        });
++        Test("parallel operation refused by native lock", [] {
++            Temp t; Assets(t.root / "CUSA01127.incoming");
++            bool checked = false; InstallCallbacks cb;
++            cb.progress = [&](const auto&) { if (!checked) { checked = true; Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Busy, "parallel installation acquired lock"); } };
++            Expect(PrepareInstallation(t.root, fixture, cb).ready() && checked, "outer installation failed");
++        });
++        Test("preexisting backup and unsafe catalogue refused", [] {
++            Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming"); fs::create_directory(t.root / "CUSA01127.previous");
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Busy, "prior backup overwritten");
++            auto invalid = std::array{fixture[0]}; invalid[0].name = "../escape";
++            Expect(PrepareInstallation(t.root, invalid).status == InstallStatus::Invalid, "unsafe catalogue accepted");
++        });
++        std::cout << cases << " asset installation cases passed\n";
++        return 0;
++    } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
++}

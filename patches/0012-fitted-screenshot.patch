@@ -1,0 +1,221 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -348,6 +348,11 @@
+ 
+ # These host tests use synthetic fixtures only and keep them below the build tree.
+ if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
++  # Needs a real graphics surface but no game assets. Run explicitly with a new
++  # output directory; do not open a window as part of the normal CTest suite.
++  add_executable(pt_renderer_capture_test EXCLUDE_FROM_ALL tests/renderer_capture_test.cpp)
++  target_link_libraries(pt_renderer_capture_test PRIVATE pt_engine)
++  add_dependencies(pt_renderer_capture_test pt_shaders)
+   enable_testing()
+   if(APPLE)
+     add_test(NAME pt_asset_install_test COMMAND pt_asset_install_test)
+diff --git a/src/engine/render/renderer.cpp b/src/engine/render/renderer.cpp
+--- a/src/engine/render/renderer.cpp
++++ b/src/engine/render/renderer.cpp
+@@ -148,6 +148,7 @@
+         return false;
+     }
+     output_ready_ = false;
++    final_ready_ = false;
+     if (!settings_.headless) {
+         const VkFormat format = ctx_.swapchain.format;
+         const bool capture = format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_UNORM ||
+@@ -431,6 +432,9 @@
+     VkImage target_image = window_ ? (presenting_ ? ctx_.swapchain.images[image_index_] : VK_NULL_HANDLE) : output_.image;
+     VkImageView target_view = window_ ? (presenting_ ? ctx_.swapchain.views[image_index_] : VK_NULL_HANDLE) : output_.view;
+     const VkExtent2D extent = RenderExtent();
++    // A fitted window does not copy the presented image: its dimensions and
++    // letterbox bars differ from the native game frame. Capture it on demand.
++    output_ready_ = false;
+     const bool xr = std::exchange(xr_pending_, false);
+     vk::ImageBarrier(cmd, final_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+@@ -561,7 +565,9 @@
+         submit.signalSemaphoreInfoCount = 1;
+         submit.pSignalSemaphoreInfos = &signal;
+     }
+-    ctx_.CheckDeviceLost(vkQueueSubmit2(ctx_.queue, 1, &submit, frame.in_flight), "frame submit");
++    const VkResult submitted = vkQueueSubmit2(ctx_.queue, 1, &submit, frame.in_flight);
++    ctx_.CheckDeviceLost(submitted, "frame submit");
++    final_ready_ = submitted == VK_SUCCESS;
+     streamline::SetMarker(streamline::Marker::RenderSubmitEnd);
+     if (presenting_) {
+         VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+@@ -582,7 +588,7 @@
+ }
+ 
+ bool Renderer::SaveScreenshot(const std::filesystem::path& path) {
+-    if (!output_.image || !output_ready_) {
++    if (!output_.image || (!output_ready_ && !final_ready_)) {
+         LogError("screenshot {} not written: {}", path.string(), output_.image ? "no frame rendered yet" : "no capture image");
+         return false;
+     }
+@@ -594,11 +600,37 @@
+         return false;
+     }
+     ctx_.Submit([&](VkCommandBuffer cmd) {
++        if (!output_ready_) {
++            // Capture the original game frame at RenderExtent(), including its
++            // game UI, final brightness and grain. The window's letterbox bars
++            // and ImGui/touch overlay are deliberately outside this image.
++            // This extra composite runs only for an explicit screenshot request.
++            vk::ImageBarrier(cmd, output_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
++                             VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
++                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
++            VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
++            color.imageView = output_.view;
++            color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
++            color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
++            color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
++            VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
++            rendering.renderArea = {{0, 0}, {width, height}};
++            rendering.layerCount = 1;
++            rendering.colorAttachmentCount = 1;
++            rendering.pColorAttachments = &color;
++            vkCmdBeginRendering(cmd, &rendering);
++            Composite(cmd, final_set_, 1.0f, {width, height});
++            vkCmdEndRendering(cmd);
++            vk::ImageBarrier(cmd, output_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
++                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
++                             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++        }
+         VkBufferImageCopy region{};
+         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+         region.imageExtent = {width, height, 1};
+         vkCmdCopyImageToBuffer(cmd, output_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &region);
+     });
++    output_ready_ = true;
+     vmaInvalidateAllocation(ctx_.allocator, readback.allocation, 0, VK_WHOLE_SIZE);
+     uint8_t* pixels = static_cast<uint8_t*>(readback.mapped);
+     const bool bgra = output_.format == VK_FORMAT_B8G8R8A8_UNORM || output_.format == VK_FORMAT_B8G8R8A8_SRGB;
+diff --git a/src/engine/render/renderer.h b/src/engine/render/renderer.h
+--- a/src/engine/render/renderer.h
++++ b/src/engine/render/renderer.h
+@@ -96,6 +96,7 @@
+     bool swapchain_dirty_ = false;
+     bool imgui_ready_ = false;
+     bool output_ready_ = false;
++    bool final_ready_ = false;
+     float brightness_override_ = 0.0f;
+ 
+     vk::Image scene_color_;
+diff --git a/tests/renderer_capture_test.cpp b/tests/renderer_capture_test.cpp
+new file mode 100644
+--- /dev/null
++++ b/tests/renderer_capture_test.cpp
+@@ -0,0 +1,111 @@
++// Asset-free GPU regression for native-frame capture from a fitted window.
++#include "engine/render/renderer.h"
++
++#include <SDL3/SDL.h>
++#include <stb_image.h>
++
++#include <array>
++#include <cstdio>
++#include <filesystem>
++#include <vector>
++
++namespace {
++int failures = 0;
++void Check(bool ok, const char* message) {
++    if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); ++failures; }
++}
++
++bool Draw(pt::Renderer& renderer, std::array<float, 4> rgba) {
++    SDL_PumpEvents();
++    if (!renderer.BeginFrame()) return false;
++    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
++    color.imageView = renderer.SceneColor().view;
++    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
++    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
++    for (int i = 0; i < 4; ++i) color.clearValue.color.float32[i] = rgba[i];
++    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
++    rendering.renderArea = {{0, 0}, renderer.RenderExtent()};
++    rendering.layerCount = 1;
++    rendering.colorAttachmentCount = 1;
++    rendering.pColorAttachments = &color;
++    vkCmdBeginRendering(renderer.Cmd(), &rendering);
++    vkCmdEndRendering(renderer.Cmd());
++    renderer.EndFrame(false);
++    return true;
++}
++
++std::vector<unsigned char> Pixels(const std::filesystem::path& path, int width, int height,
++                                 std::array<unsigned char, 4> expected) {
++    int w = 0, h = 0, components = 0;
++    unsigned char* image = stbi_load(path.string().c_str(), &w, &h, &components, 4);
++    Check(image != nullptr, "capture PNG decodes");
++    if (!image) return {};
++    Check(w == width && h == height, "PNG uses native render size, not the fitted display size");
++    bool equal = w > 0 && h > 0;
++    for (int i = 0; equal && i < w * h; ++i) {
++        for (int c = 0; c < 4; ++c) {
++            const int difference = static_cast<int>(image[i * 4 + c]) - expected[c];
++            if (difference < -1 || difference > 1) { equal = false; break; }
++        }
++    }
++    Check(equal, "all pixels, including edges, belong to current frame; no bars or stale image");
++    std::vector<unsigned char> copy(image, image + static_cast<size_t>(w) * h * 4);
++    stbi_image_free(image);
++    return copy;
++}
++}
++
++int main(int argc, char** argv) {
++    if (argc != 2) { std::fprintf(stderr, "usage: pt_renderer_capture_test <new-output-directory>\n"); return 2; }
++    const std::filesystem::path output(argv[1]);
++    if (!std::filesystem::create_directory(output)) return 2;
++    if (!SDL_Init(SDL_INIT_VIDEO)) return 2;
++    SDL_Window* window = SDL_CreateWindow("P.T. capture regression", 320, 240, SDL_WINDOW_VULKAN);
++    if (!window) { SDL_Quit(); return 2; }
++    {
++        pt::Renderer renderer;
++        pt::RendererSettings settings;
++        settings.vsync = false;
++        settings.validation = true;
++        renderer.SetRenderExtent({1920, 1080});
++        if (!renderer.Init(window, settings)) { renderer.Shutdown(); SDL_DestroyWindow(window); SDL_Quit(); return 2; }
++        const auto surface = renderer.Context().swapchain.extent;
++        Check(surface.width != 1920 || surface.height != 1080, "test really exercises a fitted surface");
++        std::printf("fitted surface %ux%u, native game capture 1920x1080\n", surface.width, surface.height);
++        Check(!renderer.SaveScreenshot(output / "before-frame.png"), "capture before first frame is rejected");
++        Check(!std::filesystem::exists(output / "before-frame.png"), "rejected capture does not create a file");
++        Check(Draw(renderer, {1, 0, 0, 1}), "first frame submitted");
++        Check(renderer.SaveScreenshot(output / "red.png"), "fitted first screenshot succeeds");
++        const auto red = Pixels(output / "red.png", 1920, 1080, {255, 0, 0, 255});
++        Check(renderer.SaveScreenshot(output / "red-again.png"), "same-frame second capture succeeds");
++        Check(red == Pixels(output / "red-again.png", 1920, 1080, {255, 0, 0, 255}), "repeat capture preserves pixels");
++        // Draw several frames without a screenshot before checking the latest one.
++        Check(Draw(renderer, {0, 0, 1, 1}), "uncaptured blue frame submitted");
++        Check(Draw(renderer, {0, 1, 0, 1}), "uncaptured green frame submitted");
++        Check(renderer.SaveScreenshot(output / "green.png"), "later fitted screenshot succeeds");
++        Pixels(output / "green.png", 1920, 1080, {0, 255, 0, 255});
++        renderer.SetRenderExtent(surface);
++        Check(Draw(renderer, {0, 0, 1, 1}), "unfitted frame submitted after target recreation");
++        Check(renderer.SaveScreenshot(output / "unfitted-blue.png"), "normal window screenshot still succeeds");
++        Pixels(output / "unfitted-blue.png", static_cast<int>(surface.width), static_cast<int>(surface.height), {0, 0, 255, 255});
++        renderer.Shutdown();
++    }
++    SDL_DestroyWindow(window);
++    {
++        pt::Renderer renderer;
++        pt::RendererSettings settings;
++        settings.headless = true;
++        settings.width = 64;
++        settings.height = 36;
++        settings.validation = true;
++        if (!renderer.Init(nullptr, settings)) { renderer.Shutdown(); SDL_Quit(); return 2; }
++        Check(Draw(renderer, {1, 0, 1, 1}), "headless frame submitted");
++        Check(renderer.SaveScreenshot(output / "headless.png"), "headless screenshot still succeeds");
++        Pixels(output / "headless.png", 64, 36, {255, 0, 255, 255});
++        renderer.Shutdown();
++    }
++    SDL_Quit();
++    std::printf("renderer capture: %d failures\n", failures);
++    return failures ? 1 : 0;
++}
