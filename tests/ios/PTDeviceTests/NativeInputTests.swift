@@ -53,12 +53,12 @@ final class NativeInputTests: XCTestCase {
         waitSeconds(1)
         capture("03-move-forward")
         point(0.90, 0.72).tap()
-        point(0.77, 0.85).press(forDuration: 1)
+        point(0.81, 0.87).press(forDuration: 1)
         capture("04-interact-and-zoom")
         point(0.92, 0.10).tap()
         waitSeconds(1)
         capture("05-pause")
-        point(0.90, 0.06).tap() // Build 4's separate menu Continue control.
+        point(0.90, 0.06).tap() // Separate menu Continue control.
         waitSeconds(1)
         XCUIDevice.shared.press(.home)
         XCTAssertTrue(game.wait(for: .runningBackground, timeout: 10))

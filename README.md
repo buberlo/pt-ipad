@@ -1,4 +1,4 @@
-# P.T. Native for iPad
+# P.T. for iPad
 
 Native ARM64 iPad port of the C++ [P.T. PC runtime](https://github.com/LoreanXavier/pt-pc), using user-supplied original game assets. The target is the complete teaser on the M2 iPad at 30 FPS, with the original presentation, touch/controller input and local microphone recognition. No Wine, FEX, VPN or CPU JIT is part of this architecture.
 
@@ -7,6 +7,7 @@ Native ARM64 iPad port of the C++ [P.T. PC runtime](https://github.com/LoreanXav
 ## Build and assets
 
 - [Build instructions](docs/BUILD.md)
+- [App icon, startup and touch layout](docs/APP_PRESENTATION.md)
 - [Approved implementation plan](docs/PLAN.md)
 - [Asset status](docs/ASSET_STATUS.md)
 - [Verified native asset installation](docs/ASSET_INSTALLATION.md)

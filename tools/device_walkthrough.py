@@ -535,7 +535,8 @@ class Capture:
             child_env = {"PT_PRESENT_TRACE_PATH": str(device_dir / "present.csv"), "PT_SYSTEM_LANGUAGE": "en-US", "PT_LOG_TICKS": "1"}
             if self.args.voice_input:
                 child_env["PT_VOICE_INPUT"] = str(device_dir / "voice-input.wav")
-            arguments = ["--no-save", "--no-mods", "--seed", "1", "--demo-rate", "1", "--input-script", str(device_route),
+            # The pinned route explicitly exercises first-boot settings. Normal iPad launches skip them.
+            arguments = ["--no-save", "--no-mods", "--options-menu", "--seed", "1", "--demo-rate", "1", "--input-script", str(device_route),
                          "--log", str(device_dir / "pt.log"), "--settings", str(device_dir / "session.ini")]
             self.report["launch_arguments"] = arguments
             self.report["launch_environment"] = child_env

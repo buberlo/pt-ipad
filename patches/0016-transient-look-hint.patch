@@ -1,0 +1,40 @@
+diff --git a/cmake/AppleBundle.cmake b/cmake/AppleBundle.cmake
+index bf79869..f45efd7 100644
+--- a/cmake/AppleBundle.cmake
++++ b/cmake/AppleBundle.cmake
+@@ -1,4 +1,4 @@
+-set(PT_APP_BUILD "5" CACHE STRING "Native application build number")
++set(PT_APP_BUILD "6" CACHE STRING "Native application build number")
+ if(NOT PT_APP_BUILD MATCHES "^[1-9][0-9]*$")
+   message(FATAL_ERROR "PT_APP_BUILD must be a positive integer")
+ endif()
+diff --git a/src/main.cpp b/src/main.cpp
+index 00ba6c9..266b8b2 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -3177,6 +3177,10 @@ int RunGame(App& app, pt::Vfs& vfs) {
+     double last_scene_time = game.Time();
+     bool running = true;
+     uint64_t frame = 0;
++#if PT_IOS
++    float touch_look_hint_seconds = 0.0f;
++    bool touch_look_hint_dismissed = false;
++#endif
+     uint64_t last_ticks = SDL_GetTicksNS();
+     pt::InputState pending_input;
+     float accumulator = 0.0f;
+@@ -4039,7 +4043,13 @@ int RunGame(App& app, pt::Vfs& vfs) {
+                                       IM_COL32(224,230,221,140), text);
+                     };
+                     if (!stick.active) hint("MOVE", .14f, .95f);
+-                    hint("SWIPE TO LOOK", .72f, .54f);
++                    const bool look_available = game.Controller().InGame() && !game.Demos().ControlsPlayer() && !game.Paused();
++                    if (look_available) {
++                        touch_look_hint_seconds += dt;
++                        touch_look_hint_dismissed |= polled.mouse_look.x != 0.0f || polled.mouse_look.y != 0.0f;
++                        if (!touch_look_hint_dismissed && touch_look_hint_seconds < 8.0f)
++                            hint("SWIPE TO LOOK", .72f, .54f);
++                    }
+                 }
+             }
+ #endif

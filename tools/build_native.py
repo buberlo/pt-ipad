@@ -58,7 +58,7 @@ def main(argv=None):
     parser.add_argument('--configure-only', action='store_true')
     parser.add_argument('--developer-dir', type=Path, default=Path('/Applications/Xcode.app/Contents/Developer'))
     parser.add_argument('--minimum-os', help='default macOS 14.0 or iOS 18.0')
-    parser.add_argument('--build-number', type=int, default=4)
+    parser.add_argument('--build-number', type=int, default=6)
     parser.add_argument('--host-glslc', type=Path)
     parser.add_argument('--voice-dir', type=Path)
     parser.add_argument('--moltenvk-root', type=Path,

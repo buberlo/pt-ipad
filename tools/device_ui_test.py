@@ -328,7 +328,7 @@ class UiCapture(Capture):
             if self.remaining() < self.args.seconds + 130:
                 raise WalkthroughError("insufficient lease time for the bounded XCTest retry and cleanup")
             command = [XCODEBUILD, "test-without-building", "-xctestrun", str(configured), "-destination", "id=" + self.args.device,
-                       "-only-testing:" + EXPECTED_TEST, "-parallel-testing-enabled", "NO", "-test-iterations", "1",
+                       "-only-testing:" + EXPECTED_TEST, "-parallel-testing-enabled", "NO",
                        "-resultBundlePath", str(self.args.output / "test.xcresult")]
             self.report["xcodebuild_arguments"] = command
             self.persist()

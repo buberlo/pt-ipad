@@ -55,3 +55,17 @@ Raw artifacts and full analysis are under `reports-private/ipad-walkthrough-buil
 | Executed route | `bb293b204d1d6b3ca3d7e6779a766c4c067fbf01dbce0db91b81aea024c603f9` |
 
 Final acceptance still requires a physical ending, touch/controller and live-microphone play, lifecycle/save testing, original-reference visual comparison, 20-minute representative timing and reboot/disconnected/offline launch.
+
+
+## Build 5 presentation and startup check
+
+After the user requested P.T. first, a bounded lease installed development build 5 over the existing bundle. App-list evidence confirms the display name P.T. and bundle version 5. A separate 90-second fresh-startup check used `--no-save --no-mods` without a forced floor or options flag. Original assets verified successfully, controller step 6 went directly to step 8 at 4.944 seconds, and the original preface played. StartGame occurred at 44.516 seconds, followed by controller step 15 at 44.550 seconds. The 90-second foreground capture shows the authentic corridor and revised touch layout. No options menu opened.
+
+The invocation-owned process was confirmed gone after SIGKILL escalation; its cleanup receipt released the shared lease. Receipts, images and runtime logs are private under `reports-private/build5-update/` and `reports-private/build5-startup/`. This verifies startup and visible controls; it does not establish touch behavior, complete gameplay or sustained performance.
+
+
+## Build 6 installation and test limits
+
+Build 6 is development-signed and installed as P.T., bundle version 6. App-list and process receipts match the installed bundle path; a game process was present during the read-only observation. The screenshot was not a controlled foreground game capture, so it cannot establish rendering or hint dismissal for this build. The updated look hint is implemented to disappear on the first swipe or after eight seconds of active gameplay.
+
+The first input-test attempt preserved an existing game process before mutation. The deployment/test attempt installed build 6, but Xcode 27 rejected `-test-iterations 1`; zero methods executed. The helper now omits this unsupported argument and uses the default single execution. A subsequent attempt preserved a newly opened game session. No automated physical-touch pass is claimed. Private receipts are under `reports-private/build6-ui*` and `reports-private/build6-observed/`. Each bounded test reservation was released after its owned-process cleanup was confirmed; existing user sessions were preserved.

@@ -58,10 +58,10 @@ python3 tools/sign_ios.py \
   --app build/ios-arm64/pt.app \
   --profile /absolute/private/path/development.mobileprovision \
   --identity 'Apple Development: local identity' \
-  --output artifacts/PT-Native-build4.ipa
+  --output artifacts/PT-build6.ipa
 ```
 
-The signer preserves its input bundle. It signs a private copy, verifies its entitlements and certificate against the profile, then publishes the IPA, JSON receipt and signed `artifacts/PT-Native-build4/pt.app`. Existing outputs are refused. Install that signed copy. Re-sign after every executable, metadata or resource change; use `--build-number` with the build wrapper to identify a new app build. Building or signing does not prove installation, foreground launch or playable device behavior. [Device testing](DEVICE_TESTING.md) requires shared-device ownership and separate acceptance evidence.
+The signer preserves its input bundle. It signs a private copy, verifies its entitlements and certificate against the profile, then publishes the IPA, JSON receipt and signed `artifacts/PT-build6/pt.app`. Existing outputs are refused. Install that signed copy. Re-sign after every executable, metadata or resource change; use `--build-number` with the build wrapper to identify a new app build. Building or signing does not prove installation, foreground launch or playable device behavior. [Device testing](DEVICE_TESTING.md) requires shared-device ownership and separate acceptance evidence.
 
 ## Private data
 
