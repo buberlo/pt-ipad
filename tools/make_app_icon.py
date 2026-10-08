@@ -41,6 +41,9 @@ def render():
     data += chunk(b'IDAT', zlib.compress(bytes(rows), 9)) + chunk(b'IEND', b'')
     DESTINATION.parent.mkdir(parents=True, exist_ok=True)
     DESTINATION.write_bytes(data)
+    public_icon = ROOT / 'art/Icon.png'
+    public_icon.parent.mkdir(parents=True, exist_ok=True)
+    public_icon.write_bytes(data)
     print(DESTINATION)
 
 
