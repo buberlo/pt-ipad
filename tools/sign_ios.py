@@ -186,12 +186,14 @@ def sign(app, profile_path, identity, output, expected_bundle=DEFAULT_BUNDLE_ID)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--developer-dir", type=Path, default=Path("/Applications/Xcode.app/Contents/Developer"))
     parser.add_argument("--bundle-id", type=bundle_id, default=DEFAULT_BUNDLE_ID)
     parser.add_argument("--app", required=True, type=Path)
     parser.add_argument("--profile", required=True, type=Path)
     parser.add_argument("--identity", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    os.environ["DEVELOPER_DIR"] = str(args.developer_dir.resolve())
     try:
         sign(args.app, args.profile, args.identity, args.output, args.bundle_id)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:

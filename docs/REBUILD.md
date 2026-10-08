@@ -7,6 +7,7 @@ This builds the reconstructed C++ `pt-pc` source port for Apple ARM64. Supply yo
 ```sh
 git clone --recurse-submodules https://github.com/buberlo/pt-ipad.git
 cd pt-ipad
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 python3 tools/prepare_source.py
 python3 tools/validate_local.py --python-only
 ```

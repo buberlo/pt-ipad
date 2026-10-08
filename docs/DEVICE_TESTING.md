@@ -65,3 +65,16 @@ Success requires the exact `PTDeviceTests/NativeInputTests/testTouchAndResume` t
 Final acceptance also requires controller input/disconnects, live microphone permission and recognition, audio interruptions, saves, complete ending, original-reference visual comparisons, and a reboot/offline launch with development tools disconnected. Keep built, signed, installed, launched, playable and accepted states separate in [STATUS.md](STATUS.md).
 
 Custom XCTest products must be built with `PT_HARNESS_BUNDLE_ID=<app-bundle-id>.harness` (default remains `com.konradkern.pt.harness`). The runner must be `<harness>.tests.xctrunner`. Pass the same `--bundle-id` to the UI helper; it validates all products and supplies `PT_TEST_BUNDLE_ID` to the Swift test process.
+
+To compile custom XCTest products locally (this does not run or install tests):
+
+```sh
+mkdir -p build/device-tests
+xcodegen generate --spec tests/ios/project.yml --project build/device-tests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build-for-testing \
+  -project build/device-tests/PTDeviceChecks.xcodeproj -scheme PTDeviceChecks \
+  -destination 'generic/platform=iOS' -derivedDataPath build/device-tests/DerivedData \
+  -jobs 4 DEVELOPMENT_TEAM=YOUR_TEAM PT_HARNESS_BUNDLE_ID=org.example.pt.harness
+```
+
+Use your existing locally authorized profiles; Xcode-managed profiles require automatic signing. A successful `build-for-testing` is not a passing test run. Pass `--bundle-id org.example.pt` and the matching `.xctestrun` to `device_ui_test.py` only when the shared device is free.

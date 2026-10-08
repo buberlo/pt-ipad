@@ -4,10 +4,10 @@ The milestone combines independent rebuilding and physical M2 iPad acceptance. T
 
 | Gate | Current outcome |
 | --- | --- |
-| Configurable app identity and profile validation | Implementation in progress; fake signing and corruption tests cover identities |
-| Repository-contained device coordinator | Implementation in progress; fake-record tests only |
-| Fresh clone, empty dependencies, rebuilt pinned MoltenVK | Pending |
-| Final candidate built / signed / installed / launched | Pending; older build 6 remains separate evidence |
+| Configurable app identity and profile validation | Passed local corruption tests and real independent iOS signing with custom ID; custom XCTest products built and validated |
+| Repository-contained device coordinator | Implemented; fake-record race/stop/cleanup tests pass; bounded M2 read-only preflight passed |
+| Fresh clone, empty dependencies, rebuilt pinned MoltenVK | Passed for Mac and iOS; custom signed rebuild verified. See REBUILD_REPORT.md |
+| Final candidate built / signed / installed / launched | Build 7 built and signed locally; not installed/launched because a preexisting P.T. session is running |
 | Corrected scripted route reaches actual ending on M2 | Pending |
 | Touch and microphone full playthrough | Deferred by user; pending human test |
 | Controller full playthrough and disconnect | Deferred by user; pending human test |

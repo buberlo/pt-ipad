@@ -71,3 +71,7 @@ An earlier XCTest attempt timed out while enabling Xcode automation: zero method
 5. Verify launch after reboot with development tools disconnected and networking unavailable.
 
 The measured M2 content fits the current 1,144-image/64-cube descriptor contract. Per-material paging and a host texture-conversion cache have not been implemented; no demonstrated target-device format or descriptor failure currently requires them. They remain explicit architecture gaps if later content/capability evidence requires those fallback paths.
+
+## Alpha implementation update — 2026-10-08
+
+Independent native Mac/iPad rebuilding, custom bundle identity, real development signing and locally built custom XCTest products are verified in [REBUILD_REPORT.md](REBUILD_REPORT.md). The repository contains its own shared-device coordinator and unified local test command. Candidate **7 is built and signed locally**, but is **not installed, launched, playable-verified or accepted**. A running M2 P.T. session was preserved. Human checks were deferred by the user; automatic ending/performance and remaining acceptance gates stay open in [ALPHA_ACCEPTANCE.md](ALPHA_ACCEPTANCE.md). No alpha tag has been set.
