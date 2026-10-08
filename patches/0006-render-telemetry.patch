@@ -1,0 +1,305 @@
+diff --git a/src/engine/render/scene_frame.cpp b/src/engine/render/scene_frame.cpp
+--- a/src/engine/render/scene_frame.cpp
++++ b/src/engine/render/scene_frame.cpp
+@@ -2260,6 +2260,7 @@
+     }
+     FrameSlot& slot = slots_[renderer_->FrameIndex()];
+     textures_->FlushMaterials();
++    textures_->ReportCounts("scene");
+     if (has_last_eye_ && glm::distance(camera.position, last_eye_) > kCameraCutDistance) {
+         adaptation_valid_ = false;
+     }
+diff --git a/src/engine/render/texture_manager.cpp b/src/engine/render/texture_manager.cpp
+--- a/src/engine/render/texture_manager.cpp
++++ b/src/engine/render/texture_manager.cpp
+@@ -198,6 +198,21 @@
+     return true;
+ }
+ 
++void TextureManager::ReportCounts(const char* scope, bool force) {
++    const uint32_t images = static_cast<uint32_t>(images_.size());
++    const uint32_t materials = static_cast<uint32_t>(materials_.size());
++    if (!force && images == reported_textures_ && materials == reported_materials_) return;
++    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count());
++    if (!force && counts_report_ns_ && now - counts_report_ns_ < 1000000000) return;
++    LogInfo("textures: scope={} image_slots={} peak_image_slots={} capacity={} cube_slots={} peak_cube_slots={} cube_capacity={} materials={} peak_materials={} material_capacity={}",
++        scope, images, peak_textures_, texture_capacity_, cube_slots_.size(), peak_cube_slots_, kMaxCubeTextures,
++        materials, peak_materials_, kMaxMaterials);
++    reported_textures_ = images;
++    reported_materials_ = materials;
++    counts_report_ns_ = now;
++}
++
+ void TextureManager::Shutdown() {
+     for (std::future<void>& worker : decode_workers_) {
+         worker.wait();
+@@ -208,6 +223,7 @@
+     if (!ctx_) {
+         return;
+     }
++    ReportCounts("shutdown", true);
+     for (vk::Image& image : images_) {
+         ctx_->DestroyImage(image);
+     }
+@@ -371,6 +387,8 @@
+         cube_slots_[index] = slot;
+     }
+     images_.push_back(image);
++    peak_textures_ = std::max(peak_textures_, static_cast<uint32_t>(images_.size()));
++    peak_cube_slots_ = std::max(peak_cube_slots_, static_cast<uint32_t>(cube_slots_.size()));
+     cube_.push_back(cube && index > 0 ? 1 : 0);
+     by_name_[name] = index;
+     return index;
+@@ -616,6 +634,7 @@
+     if (materials_.size() >= kMaxMaterials)
+         FatalError("Material GPU buffer capacity exceeded; no materials were dropped", ctx_->surface != VK_NULL_HANDLE);
+     materials_.push_back(material);
++    peak_materials_ = std::max(peak_materials_, static_cast<uint32_t>(materials_.size()));
+     materials_dirty_ = true;
+     return static_cast<uint32_t>(materials_.size() - 1);
+ }
+diff --git a/src/engine/render/texture_manager.h b/src/engine/render/texture_manager.h
+--- a/src/engine/render/texture_manager.h
++++ b/src/engine/render/texture_manager.h
+@@ -84,6 +84,8 @@
+     uint32_t TextureCapacity() const { return texture_capacity_; }
+     uint32_t TextureCount() const { return static_cast<uint32_t>(images_.size()); }
+     uint32_t CubeSlot(uint32_t texture) const;
++    // Main render thread; logs changed counts at most once/second, plus explicit shutdown.
++    void ReportCounts(const char* scope, bool force = false);
+ 
+ private:
+     VkSampler CreateSampler(int anisotropy) const;
+@@ -93,6 +95,9 @@
+ 
+     vk::Context* ctx_ = nullptr;
+     uint32_t texture_capacity_ = 0;
++    uint32_t peak_textures_ = 0, peak_cube_slots_ = 0, peak_materials_ = 0;
++    uint32_t reported_textures_ = ~0u, reported_materials_ = ~0u;
++    uint64_t counts_report_ns_ = 0;
+     VkSampler base_sampler_ = VK_NULL_HANDLE;
+     VkSampler sampler_ = VK_NULL_HANDLE;
+     int anisotropy_ = 0;
+diff --git a/src/engine/render/vk_context.cpp b/src/engine/render/vk_context.cpp
+--- a/src/engine/render/vk_context.cpp
++++ b/src/engine/render/vk_context.cpp
+@@ -5,6 +5,8 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <cinttypes>
++#include <cstdlib>
+ #include <cstring>
+ #include <string>
+ 
+@@ -410,6 +412,8 @@
+ void Context::Shutdown() {
+     if (device) {
+         vkDeviceWaitIdle(device);
++        PollDisplayTiming(true);
++        ClosePresentTrace();
+         DestroySwapchain();
+         if (upload_pool_) {
+             vkDestroyCommandPool(device, upload_pool_, nullptr);
+@@ -517,7 +521,9 @@
+         DestroySwapchain();
+     }
+     swapchain.handle = handle;
+-    ResetDisplayTiming();
++    display_stream_owned_ = true;
++    OpenPresentTrace();
++    ResetDisplayTiming("swapchain");
+     swapchain.format = chosen.format;
+     swapchain.extent = extent;
+     swapchain.min_image_count = image_count;
+@@ -618,35 +624,95 @@
+     return vkAcquireNextImageKHR(device, swapchain.handle, UINT64_MAX, semaphore, VK_NULL_HANDLE, index);
+ }
+ 
+-void Context::ResetDisplayTiming() {
++void Context::OpenPresentTrace() {
++    // Opt in explicitly to a private app-writable path. No per-frame allocations or unbounded memory.
++    if (present_trace_attempted_) return;
++    const char* path = std::getenv("PT_PRESENT_TRACE_PATH");
++    if (!path || !*path) return;
++    present_trace_attempted_ = true;
++    if (!display_timing_ || swapchain_owner_) {
++        LogWarn("display trace: unavailable; actual Google presentation timing is required");
++        return;
++    }
++    present_trace_ = std::fopen(path, "w");
++    if (!present_trace_) { LogError("display trace: cannot open requested private output {}", path); return; }
++    std::setvbuf(present_trace_, present_trace_buffer_.data(), _IOFBF, present_trace_buffer_.size());
++    std::fputs("schema_version,segment,segment_reason,present_id,actual_present_ns,interval_ns,desired_present_ns,earliest_present_ns,present_margin_ns,poll_monotonic_ns,surface_width,surface_height,unobserved_ids_before\n", present_trace_);
++    LogInfo("display trace: actual presentation CSV enabled at {} (64 KiB buffer, flush each second and lifecycle reset)", path);
++}
++
++void Context::ClosePresentTrace() {
++    if (!present_trace_) return;
++    const bool failed = std::ferror(present_trace_) != 0;
++    const int close_result = std::fclose(present_trace_);
++    present_trace_ = nullptr;
++    LogInfo("display trace: rows={} segments={} duplicate_or_pre_reset_ids_skipped={} unobserved_ids={} write_ok={}",
++            trace_rows_, display_segment_, display_duplicate_ids_, display_missing_ids_, !failed && close_result == 0);
++    if (failed || close_result != 0) LogError("display trace: output incomplete because a write/flush failed");
++}
++
++void Context::BeginDisplaySegment(const char* reason) {
+     display_fps_ = -1.0;
+     display_times_.clear();
+-    display_poll_ns_ = display_log_ns_ = display_arrival_ns_ = 0;
++    display_arrival_ns_ = 0;
++    ++display_segment_;
++    display_segment_reason_ = reason ? reason : "unspecified";
++    for (char& value : display_segment_reason_)
++        if (value == ',' || value == '\n' || value == '\r' || value == '"') value = '_';
++    // Persist the previous segment before background suspension or swapchain replacement.
++    if (present_trace_ && std::fflush(present_trace_) != 0) ClosePresentTrace();
++}
++
++void Context::ResetDisplayTiming(const char* reason) {
++    BeginDisplaySegment(reason);
++    display_poll_ns_ = display_log_ns_ = 0;
+     // Keep IDs unique within a swapchain, and ignore history from before a lifecycle reset.
+     last_present_id_ = next_present_id_ - 1;
+ }
+ 
+-void Context::PollDisplayTiming() {
+-    if (!display_timing_ || !vkGetPastPresentationTimingGOOGLE || !swapchain.handle) return;
++void Context::WritePresentTrace(const VkPastPresentationTimingGOOGLE& item, uint64_t interval, uint64_t now, uint32_t gap) {
++    if (!present_trace_) return;
++    // A zero interval marks a segment's first observation, never an instantaneous displayed frame.
++    const int written = std::fprintf(present_trace_, "1,%" PRIu64 ",%s,%u,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%u,%u,%u\n",
++        display_segment_, display_segment_reason_.c_str(), item.presentID, item.actualPresentTime, interval,
++        item.desiredPresentTime, item.earliestPresentTime, item.presentMargin, now,
++        swapchain.extent.width, swapchain.extent.height, gap);
++    if (written < 0) { ClosePresentTrace(); return; }
++    ++trace_rows_;
++    if (!trace_flush_ns_ || now - trace_flush_ns_ >= 1000000000) {
++        trace_flush_ns_ = now;
++        if (std::fflush(present_trace_) != 0) ClosePresentTrace();
++    }
++}
++
++void Context::PollDisplayTiming(bool force) {
++    if (!display_timing_ || !vkGetPastPresentationTimingGOOGLE || !swapchain.handle || swapchain_owner_ || !display_stream_owned_) return;
+     const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+         std::chrono::steady_clock::now().time_since_epoch()).count());
+-    if (display_poll_ns_ && now - display_poll_ns_ < 250000000) return;
++    if (!force && display_poll_ns_ && now - display_poll_ns_ < 250000000) return;
+     display_poll_ns_ = now;
+     uint32_t count = 0;
+     VkResult result = vkGetPastPresentationTimingGOOGLE(device, swapchain.handle, &count, nullptr);
+-    if (result != VK_SUCCESS) { display_fps_ = -1.0; return; }
+-    if (count > 256) { display_times_.clear(); count = 256; }
++    if (result != VK_SUCCESS) { BeginDisplaySegment("timing_query_failed"); return; }
++    if (count > 256) { BeginDisplaySegment("driver_history_truncated"); count = 256; }
+     std::vector<VkPastPresentationTimingGOOGLE> past(count);
+     if (count) {
+         result = vkGetPastPresentationTimingGOOGLE(device, swapchain.handle, &count, past.data());
+-        if (result != VK_SUCCESS && result != VK_INCOMPLETE) { display_fps_ = -1.0; return; }
++        if (result != VK_SUCCESS && result != VK_INCOMPLETE) { BeginDisplaySegment("timing_query_failed"); return; }
+         past.resize(count);
+         std::sort(past.begin(), past.end(), [](const auto& a, const auto& b) { return a.presentID < b.presentID; });
+     }
+     for (const auto& item : past) {
+-        if (!item.actualPresentTime || item.presentID <= last_present_id_) continue;
+-        if ((last_present_id_ && item.presentID != last_present_id_ + 1) ||
+-            (!display_times_.empty() && item.actualPresentTime <= display_times_.back())) display_times_.clear();
++        if (!item.actualPresentTime) continue;
++        // After uint32 wrap, delayed history can still contain IDs from the old sequence.
++        if (item.presentID <= last_present_id_ || (next_present_id_ && item.presentID >= next_present_id_)) {
++            ++display_duplicate_ids_; continue;
++        }
++        const uint32_t gap = last_present_id_ ? item.presentID - last_present_id_ - 1 : 0;
++        if (gap) { display_missing_ids_ += gap; BeginDisplaySegment("unobserved_present_ids"); }
++        if (!display_times_.empty() && item.actualPresentTime <= display_times_.back()) BeginDisplaySegment("nonmonotonic_actual_time");
++        const uint64_t interval = display_times_.empty() ? 0 : item.actualPresentTime - display_times_.back();
++        WritePresentTrace(item, interval, now, gap);
+         last_present_id_ = item.presentID;
+         if (display_times_.size() == 256) display_times_.erase(display_times_.begin());
+         display_times_.push_back(item.actualPresentTime);
+@@ -659,14 +725,15 @@
+         if (elapsed >= 500000000) display_fps_ = (display_times_.size() - 1) * 1.0e9 / static_cast<double>(elapsed);
+     }
+     if (!display_log_ns_ || now - display_log_ns_ >= 1000000000) {
+-        LogInfo("display: observed_actual_presented={} fps={:.3f} surface={}x{} source=VK_GOOGLE_display_timing (-1=unavailable)",
+-                displayed_frames_, display_fps_, swapchain.extent.width, swapchain.extent.height);
++        LogInfo("display: observed_actual_presented={} fps={:.3f} surface={}x{} segment={} unobserved_ids={} source=VK_GOOGLE_display_timing (-1=unavailable)",
++                displayed_frames_, display_fps_, swapchain.extent.width, swapchain.extent.height, display_segment_, display_missing_ids_);
+         display_log_ns_ = now;
+     }
+ }
+ 
+ VkResult Context::QueuePresent(const VkPresentInfoKHR& info) {
+     if (swapchain_owner_) return swapchain_owner_->QueuePresent(queue, info);
++    if (!display_stream_owned_) return vkQueuePresentKHR(queue, &info);
+     VkPresentInfoKHR timed = info;
+     VkPresentTimeGOOGLE time{next_present_id_, 0};
+     VkPresentTimesInfoGOOGLE timing{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
+@@ -674,18 +741,20 @@
+     for (auto* item = static_cast<const VkBaseInStructure*>(info.pNext); item; item = item->pNext)
+         existing_timing |= item->sType == VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
+     if (display_timing_ && !existing_timing && info.swapchainCount == 1 && info.pSwapchains[0] == swapchain.handle) {
+-        if (!next_present_id_) { next_present_id_ = 1; ResetDisplayTiming(); time.presentID = 1; }
++        if (!next_present_id_) { next_present_id_ = 1; ResetDisplayTiming("present_id_wrap"); time.presentID = 1; }
+         timing.pNext = info.pNext; timing.swapchainCount = 1; timing.pTimes = &time;
+         timed.pNext = &timing;
+         ++next_present_id_;
+     } else if (display_timing_) {
+         // A foreign present-ID stream must not be interpreted as this renderer's frame sequence.
+-        ResetDisplayTiming();
++        ResetDisplayTiming("foreign_present_stream");
++        display_stream_owned_ = false;
++        LogWarn("display: foreign present stream; actual timing disabled until swapchain replacement");
+         return vkQueuePresentKHR(queue, &info);
+     }
+     const VkResult result = vkQueuePresentKHR(queue, &timed);
+     if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) PollDisplayTiming();
+-    else ResetDisplayTiming();
++    else ResetDisplayTiming("present_failed");
+     return result;
+ }
+ 
+diff --git a/src/engine/render/vk_context.h b/src/engine/render/vk_context.h
+--- a/src/engine/render/vk_context.h
++++ b/src/engine/render/vk_context.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <array>
++#include <cstdio>
+ #include <functional>
+ #include <string>
+ #include <vector>
+@@ -63,7 +65,7 @@
+     VkResult QueuePresent(const VkPresentInfoKHR& info);
+     // Main render/event thread only, including lifecycle resets. No Metal callback writes these fields.
+     // Actual presentation timestamps only; -1 means unavailable or still warming up.
+-    void ResetDisplayTiming();
++    void ResetDisplayTiming(const char* reason = "lifecycle");
+     double DisplayFPS() const { return display_fps_; }
+     uint64_t DisplayedFrames() const { return displayed_frames_; }
+     bool DisplayTimingSupported() const { return display_timing_; }
+@@ -113,8 +115,19 @@
+     void CheckDeviceLost(VkResult result, const char* where);
+ 
+ private:
+-    void PollDisplayTiming();
++    void PollDisplayTiming(bool force = false);
++    void BeginDisplaySegment(const char* reason);
++    void OpenPresentTrace();
++    void ClosePresentTrace();
++    void WritePresentTrace(const VkPastPresentationTimingGOOGLE& item, uint64_t interval, uint64_t now, uint32_t gap);
++    std::FILE* present_trace_ = nullptr;
++    bool present_trace_attempted_ = false;
++    std::array<char, 65536> present_trace_buffer_{};
++    uint64_t trace_rows_ = 0, trace_flush_ns_ = 0, display_segment_ = 0;
++    uint64_t display_duplicate_ids_ = 0, display_missing_ids_ = 0;
++    std::string display_segment_reason_ = "initial";
+     bool display_timing_ = false;
++    bool display_stream_owned_ = true;
+     double display_fps_ = -1.0;
+     uint64_t displayed_frames_ = 0;
+     uint64_t display_poll_ns_ = 0, display_log_ns_ = 0, display_arrival_ns_ = 0;

@@ -1,0 +1,120 @@
+diff --git a/cmake/AppleBundle.cmake b/cmake/AppleBundle.cmake
+--- a/cmake/AppleBundle.cmake
++++ b/cmake/AppleBundle.cmake
+@@ -25,6 +25,8 @@
+     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "${resources}/fonts"
+     COMMAND ${CMAKE_COMMAND} -E make_directory "${resources}/licenses"
+     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/LICENSE" "${resources}/licenses/pt-pc-MIT.txt"
++    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/third_party/apple_notices/PT-iPad-MIT.txt" "${resources}/licenses/PT-iPad-MIT.txt"
++    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${harfbuzz_SOURCE_DIR}/src/ms-use/COPYING" "${resources}/licenses/harfbuzz-ms-use-MIT.txt"
+     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PT_WWISE_CODEBOOKS_LICENSE}" "${resources}/licenses/ww2ogg-COPYING"
+     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/apple-build-inputs.txt" "${resources}/apple-build-inputs.txt"
+     VERBATIM)
+diff --git a/cmake/Dependencies.cmake b/cmake/Dependencies.cmake
+--- a/cmake/Dependencies.cmake
++++ b/cmake/Dependencies.cmake
+@@ -12,18 +12,18 @@
+ set(SDL_STATIC ON CACHE BOOL "" FORCE)
+ set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+ set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+-FetchContent_Declare(sdl3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
++FetchContent_Declare(sdl3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG fa2c02bb6e21974a89ea9824bc53c9932abe5f9c GIT_SHALLOW FALSE)
+ 
+ set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+ set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+ set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+ set(ZLIB_INSTALL OFF CACHE BOOL "" FORCE)
+-FetchContent_Declare(zlib GIT_REPOSITORY https://github.com/madler/zlib.git GIT_TAG v1.3.2 GIT_SHALLOW TRUE)
+-
+-FetchContent_Declare(volk GIT_REPOSITORY https://github.com/zeux/volk.git GIT_TAG 1.4.350 GIT_SHALLOW TRUE)
+-FetchContent_Declare(vma GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
+-FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TAG 1.0.3 GIT_SHALLOW TRUE)
+-FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.92.9b-docking GIT_SHALLOW TRUE)
++FetchContent_Declare(zlib GIT_REPOSITORY https://github.com/madler/zlib.git GIT_TAG da607da739fa6047df13e66a2af6b8bec7c2a498 GIT_SHALLOW FALSE)
++
++FetchContent_Declare(volk GIT_REPOSITORY https://github.com/zeux/volk.git GIT_TAG 3ca312a4f38baa63d8006b6905abbeeb89c8087d GIT_SHALLOW FALSE)
++FetchContent_Declare(vma GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git GIT_TAG 3aa921224c154a0d2c43912bc88e1c42ce1f7607 GIT_SHALLOW FALSE)
++FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TAG 8d1fd52e5ab5590e2c81768ace50c72bae28f2ed GIT_SHALLOW FALSE)
++FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG b48d1afbe8ee8b238e2961dc363a949dd7304e23 GIT_SHALLOW FALSE)
+ FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb.git GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20 GIT_SHALLOW FALSE)
+ FetchContent_Declare(lua51 URL https://www.lua.org/ftp/lua-5.1.5.tar.gz
+   URL_HASH SHA256=2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333)
+@@ -147,7 +147,8 @@
+ FetchContent_Populate(lua51)
+ FetchContent_Populate(stb)
+ 
+-FetchContent_Declare(bc7enc URL https://codeload.github.com/richgel999/bc7enc_rdo/zip/b9438627eef73a1157e84201b6fa6eb2ffd6d9f0)
++FetchContent_Declare(bc7enc URL https://codeload.github.com/richgel999/bc7enc_rdo/zip/b9438627eef73a1157e84201b6fa6eb2ffd6d9f0
++  URL_HASH SHA256=e4b9328266568c8c345186bc246328b2dc6a248660b8c56d22e0771f00f83090)
+ FetchContent_Populate(bc7enc)
+ add_library(pt_bc7enc STATIC ${bc7enc_SOURCE_DIR}/bc7enc.cpp)
+ target_include_directories(pt_bc7enc PUBLIC ${bc7enc_SOURCE_DIR})
+@@ -204,7 +205,7 @@
+ target_link_libraries(pt_thirdparty PUBLIC Vulkan::Headers SDL3::SDL3-static zlibstatic pt_bc7enc)
+ if(NOT WIN32)
+   # Unicode text shaping for the added languages (src/engine/ui/unicode_font_harfbuzz.cpp); Windows uses Uniscribe instead
+-  FetchContent_Declare(harfbuzz GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz.git GIT_TAG 14.6.0 GIT_SHALLOW TRUE)
++  FetchContent_Declare(harfbuzz GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz.git GIT_TAG c7a7457b7385f33178e8cf87615ca077a810bbe7 GIT_SHALLOW FALSE)
+   FetchContent_Populate(harfbuzz)
+   add_library(pt_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
+   target_include_directories(pt_harfbuzz PUBLIC ${harfbuzz_SOURCE_DIR}/src)
+@@ -215,8 +216,8 @@
+   target_compile_options(pt_thirdparty PRIVATE /w)
+ endif()
+ 
+-FetchContent_Declare(ogg GIT_REPOSITORY https://github.com/xiph/ogg.git GIT_TAG v1.3.5 GIT_SHALLOW TRUE)
+-FetchContent_Declare(vorbis GIT_REPOSITORY https://github.com/xiph/vorbis.git GIT_TAG v1.3.7 GIT_SHALLOW TRUE)
++FetchContent_Declare(ogg GIT_REPOSITORY https://github.com/xiph/ogg.git GIT_TAG e1774cd77f471443541596e09078e78fdc342e4f GIT_SHALLOW FALSE)
++FetchContent_Declare(vorbis GIT_REPOSITORY https://github.com/xiph/vorbis.git GIT_TAG 0657aee69dec8508a0011f47f3b69d7538e9d262 GIT_SHALLOW FALSE)
+ FetchContent_Populate(ogg)
+ FetchContent_Populate(vorbis)
+ 
+@@ -228,6 +229,12 @@
+   "${PT_WWISE_CODEBOOKS_LICENSE}"
+   EXPECTED_HASH SHA256=0a12f3490863fa01539f500fc74a0e8efbfeb22852aac087c645fbd7362d6726)
+ 
++if(EXISTS ${PT_WWISE_CODEBOOKS_BIN})
++  file(SHA256 "${PT_WWISE_CODEBOOKS_BIN}" pt_codebooks_hash)
++  if(NOT pt_codebooks_hash STREQUAL "00a93eab267d281401b1efd54e888a2e183299b9e6c446c48d09f701a89d9d27")
++    message(FATAL_ERROR "Cached Wwise Vorbis codebooks differ from the pinned input; preserving the file")
++  endif()
++endif()
+ if(NOT EXISTS ${PT_WWISE_CODEBOOKS_BIN})
+   file(DOWNLOAD https://raw.githubusercontent.com/hcs64/ww2ogg/14ed9b0dd62e815a38702b5f03c57006cbe2501b/packed_codebooks_aoTuV_603.bin ${PT_WWISE_CODEBOOKS_BIN}
+     EXPECTED_HASH SHA256=00a93eab267d281401b1efd54e888a2e183299b9e6c446c48d09f701a89d9d27 STATUS pt_codebooks_status)
+@@ -237,7 +244,8 @@
+     message(FATAL_ERROR "cannot download the Wwise Vorbis codebook library: ${pt_codebooks_status}")
+   endif()
+ endif()
+-if(NOT EXISTS ${PT_WWISE_CODEBOOKS_C} OR ${PT_WWISE_CODEBOOKS_BIN} IS_NEWER_THAN ${PT_WWISE_CODEBOOKS_C})
++# Regenerate from the verified binary; do not trust an old generated C cache.
++if(TRUE)
+   file(READ ${PT_WWISE_CODEBOOKS_BIN} pt_codebooks_hex HEX)
+   string(LENGTH "${pt_codebooks_hex}" pt_codebooks_hex_length)
+   math(EXPR pt_codebooks_size "${pt_codebooks_hex_length} / 2")
+diff --git a/third_party/apple_notices/PT-iPad-MIT.txt b/third_party/apple_notices/PT-iPad-MIT.txt
+new file mode 100644
+--- /dev/null
++++ b/third_party/apple_notices/PT-iPad-MIT.txt
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (C) 2026 buberlo
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.

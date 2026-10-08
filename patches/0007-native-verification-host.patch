@@ -1,0 +1,122 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index 2d08d80..c65ca26 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -7,6 +7,11 @@
+ #if defined(__APPLE__)
+ #include "engine/platform/apple_host.h"
+ #endif
++#if PT_IOS
++#include "engine/platform/asset_install.h"
++#include <atomic>
++#include <future>
++#endif
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+@@ -2833,11 +2838,13 @@ bool PumpEvents(App& app, pt::InputDevice* input, bool& running) {
+         }
+ #if PT_IOS
+         if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
++            if (app.mobile_active) pt::LogInfo("iPad lifecycle: suspending GPU, audio and input");
+             if (app.mobile_active && app.renderer.Context().device) vkDeviceWaitIdle(app.renderer.Context().device);
+             app.renderer.Context().ResetDisplayTiming();
+             app.mobile_active = false;
+             if (input) input->ResetTransient();
+         } else if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
++            pt::LogInfo("iPad lifecycle: foreground; presentation timing and held input reset");
+             app.mobile_active = true;
+             app.renderer.Context().ResetDisplayTiming();
+             int width = 0, height = 0;
+@@ -4388,6 +4395,9 @@ int main(int argc, char** argv) {
+         return 3;
+     }
+     pt::LogInfo("pt-port version {} ({})", pt::update::CurrentVersion(), pt::update::Platform());
++#ifdef PT_NATIVE_BUILD
++    pt::LogInfo("native application build {} source {}", PT_NATIVE_BUILD, PT_BUILD_ID);
++#endif
+ #ifdef _WIN32
+     pt::InstallCrashReporting(g_output_dir, PT_BUILD_ID);
+     if (const char* test = std::getenv("PT_TEST_CRASH")) {
+@@ -4437,6 +4447,48 @@ int main(int argc, char** argv) {
+         pt::VirtualPads::UseOnlyVirtualDevices();
+     }
+ 
++#if PT_IOS
++    if (!SDL_Init(options.headless ? SDL_INIT_EVENTS : (SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))) {
++        pt::LogError("SDL_Init: {}", SDL_GetError());
++        return 1;
++    }
++    {
++        const char* documents = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
++        if (!documents) {
++            pt::LogError("iPad Documents folder is unavailable: {}", SDL_GetError());
++            return 1;
++        }
++        std::atomic<bool> cancelled = false;
++        auto verification = std::async(std::launch::async, [directory = std::filesystem::path(documents), &cancelled,
++                                                          custom = options.game_dir_given, custom_path = options.game_dir] {
++            pt::assets::InstallCallbacks callbacks;
++            callbacks.cancelled = [&] { return cancelled.load(); };
++            return custom ? pt::assets::VerifyInstallation(custom_path, pt::assets::KnownUsAssets(), callbacks)
++                          : pt::assets::PrepareUsInstallation(directory, callbacks);
++        });
++        // Keep UIKit responsive while hashing the 1.3 GB install on a worker.
++        while (verification.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
++            SDL_Event event;
++            while (SDL_PollEvent(&event)) {
++                if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_TERMINATING ||
++                    event.type == SDL_EVENT_WILL_ENTER_BACKGROUND) cancelled = true;
++            }
++            SDL_Delay(8);
++        }
++        const auto verified = verification.get();
++        pt::LogInfo("asset installation: {}", verified.message);
++        if (!verified.ready()) {
++            if (!cancelled && !options.headless) {
++                const std::string message = "P.T. game data is not ready.\n\n" + verified.message +
++                    "\n\nCopy a verified CUSA01127.incoming folder into this app's Documents folder, then reopen P.T.";
++                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "P.T. game data", message.c_str(), nullptr);
++            }
++            return cancelled ? 75 : 1;
++        }
++        app.options.game_dir = verified.directory;
++        app.options.game_dir_given = true;
++    }
++#endif
+     pt::Vfs vfs;
+     const std::filesystem::path game_dir = FindGameDir(options);
+     if (game_dir != options.game_dir) {
+@@ -4463,10 +4515,12 @@ int main(int argc, char** argv) {
+         return RunFox2Test(vfs, options.fox2_test);
+     }
+ 
++#if !PT_IOS
+     if (!SDL_Init(options.headless ? (options.virtual_pads ? SDL_INIT_GAMEPAD : 0) : (SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))) {
+         pt::LogError("SDL_Init: {}", SDL_GetError());
+         return 1;
+     }
++#endif
+     if (options.headless && !options.settings_path.empty()) {
+         app.settings_path = options.settings_path;
+         pt::LoadAppSettings(app.settings_path, app.settings);
+diff --git a/cmake/AppleBundle.cmake b/cmake/AppleBundle.cmake
+index 44e8afc..d1c5d9e 100644
+--- a/cmake/AppleBundle.cmake
++++ b/cmake/AppleBundle.cmake
+@@ -1,9 +1,14 @@
++set(PT_APP_BUILD "3" CACHE STRING "Native application build number")
++if(NOT PT_APP_BUILD MATCHES "^[1-9][0-9]*$")
++  message(FATAL_ERROR "PT_APP_BUILD must be a positive integer")
++endif()
+ foreach(game pt pt_release)
++  target_compile_definitions(${game} PRIVATE PT_NATIVE_BUILD="${PT_APP_BUILD}")
+   set_target_properties(${game} PROPERTIES MACOSX_BUNDLE TRUE
+     MACOSX_BUNDLE_GUI_IDENTIFIER "${PT_BUNDLE_IDENTIFIER}"
+     MACOSX_BUNDLE_BUNDLE_NAME "P.T. Native"
+     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PT_VERSION}"
+-    MACOSX_BUNDLE_BUNDLE_VERSION "1"
++    MACOSX_BUNDLE_BUNDLE_VERSION "${PT_APP_BUILD}"
+     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
+     XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic
+     XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${PT_DEVELOPMENT_TEAM}"

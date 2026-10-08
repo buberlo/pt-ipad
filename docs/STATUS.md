@@ -1,37 +1,55 @@
 # Implementation status
 
-As of 2026-10-08, the complete engine builds for macOS ARM64 and iPhoneOS ARM64. A development-signed build has been installed and launched on the physical M2 iPad; a fresh device screenshot shows the original starting room after its opening animation. Full playability and release acceptance are still pending.
+As of 2026-10-08, development build 4 is a compiled and development-signed native ARM64 iPad app. Original assets are extracted and verified. Build 3 ran on the physical M2 iPad through the final-puzzle loop; build 4 contains the fixes found during that run. Full release acceptance is **not complete**.
 
-| Gate | State |
+| State | Evidence |
 | --- | --- |
-| Private GitHub repository | Created; Actions disabled |
-| Native source baseline | v1.0.1 pinned; three initial patches reconstruct the tested source tree exactly |
-| Original package metadata | CUSA01127, v01.00 identified and hashed |
-| Game archives extracted and validated | Three archives match upstream US hashes; 12 core packages readable |
-| macOS ARM64 engine | Built; real assets rendered; ten asset-free CTests pass |
-| iPhoneOS ARM64 bundle | Built with static MoltenVK and whisper; no Wine, FEX or CPU JIT |
-| Signed and installed on iPad | Confirmed for development build 2 (`CFBundleVersion=1`) |
-| Foreground launch and authentic scene | Confirmed on M2 iPad; starting room visible, audio device initialized, touch overlay visible |
-| Complete gameplay | Mac automated full route reaches 27/27 milestones and ending; physical-device playthrough remains pending |
-| 30 FPS performance acceptance | Pending |
+| Repository | Private buberlo/pt-ipad; GitHub Actions disabled; local checks only |
+| Reproducible source | Immutable upstream v1.0.1 plus 14 ordered patches; fresh reconstruction matches the built source |
+| Assets | CUSA01127 v01.00; three matching US archive hashes; 12 readable core packages |
+| Built | Complete macOS ARM64 and iPhoneOS ARM64 build 4, 1080p internal target, 30 FPS cap |
+| Signed | Build 4 signature, certificate/profile and embedded build manifest verified |
+| Installed | Build 3 confirmed on the M2 iPad; build 4 installation pending |
+| Launched | Build 3 foreground scenes and runtime logs confirmed, including corridor, bathroom, peephole and f160 |
+| Playable | Final Mac automated ending passes; iPad scripted run reached 23/27 checkpoints but missed the timed final-puzzle sequence |
+| Accepted | No: complete physical playthrough, controls, visual parity and sustained performance remain open |
 
-The touch-control state tests passed with AddressSanitizer and UndefinedBehaviorSanitizer. The real input/options-menu integration test also passed. These verify input mapping, not physical touchscreen or controller operation.
+## Build 4 identity
 
-## Device evidence
+- Upstream: `5c6307886f4470d8391bf49445a7c9124ea9d623` (v1.0.1).
+- Patched source tree SHA-256: `996fcb646a6a77b2ed37d7ed450d21606119b8a3a2ee96bceca24d70dc3d488c`.
+- IPA SHA-256: `f5151e7f658121c324886962b4b6a63ecd1852f137b53756671b7f3e32aff48f`.
+- Signed executable SHA-256: `77a28b27bceecf8f3cb3ed0c23e23668184c4fbf0eeea6f23b3b99d2318afb16`.
+- Embedded build-manifest SHA-256: `adcab08c0c54be39220d3123ad537579de61859f40f23434f8a5ab8eb3ce12fd`.
 
-Development build 2: native `arm64`, platform `IOS`, deployment target 18.0, bundle `com.konradkern.pt.native`. The development profile carries no CPU-JIT entitlement. IPA SHA-256: `bcfdfd659cb43f3e650119c931c039c9ad00435226e872412361376535b98986`; signed executable: `9ca5889fe8204fa2ce1a23773a27ff7c5c20d6a010193d37c3b1b8b943f843cd`.
+The bundle is `com.konradkern.pt.native`, `CFBundleVersion=4`, native `arm64`, platform `IOS`, deployment target 18.0. Its development profile has no CPU-JIT entitlement. It links no Wine/FEX/desktop runtime. The signed app/IPA, profiles, raw captures and game data remain private and outside Git.
 
-The app loaded all core packages, initialized stereo 48 kHz audio, completed the opening animation and reached game step 15 on `f010`. The fresh 35-second screenshot shows the starting-room door and original scene with the independent touch overlay. The actual presentation counter reached 739 frames before this bounded run ended; its rolling rate settled around 30 FPS after loading. This short stationary scene is **not** a 20-minute representative-play performance result. Audible output, physical controls, microphone interaction, corridor traversal and ending on iPad remain unverified.
+## Completed implementation and local checks
 
-Rendering used an internal 1920×1080 target, a 2732×2048 display surface, a 30 FPS cap and actual `VK_GOOGLE_display_timing` timestamps. The app's own PID was terminated before releasing the shared device lease. Logs, screenshots, installation receipt and original assets remain in ignored private directories.
+- Native build and resource packaging, host shader compilation, static ARM64 whisper, application data/save/cache paths and SDL/UIKit lifecycle support.
+- Capability-aware Vulkan/MoltenVK setup, supported depth/sample selection, bounded split image/sampler descriptors, and actual presentation-timestamp tracing.
+- Verified native asset staging, hash checks, atomic activation, cancellation/rollback and repair of a damaged owned installation. Twenty native installer cases pass with sanitizers.
+- Touch/gamepad action mapping and native touch menus, including first-boot Continue/Back and direct camera/settings row taps. Event integration passes 22 asset-free checks and 31 checks with original assets. These are not physical-touch acceptance.
+- f080 original model-data spelling compatibility, mirror flashlight/shadow repair, fitted-output screenshot capture, thermal/power telemetry and asynchronous windowed voice-file testing.
+- All 12 asset-free CTests pass. Final shared-code validation passes 97 original Lua chunks and 49/49 milestones across four headless Mac routes, including the ending, with no runtime error lines. Two original f060 waypoint diagnostics are retained separately.
+- The fitted screenshot GPU regression fails against the old renderer and passes with the repair. Six matched native Mac mirror comparisons demonstrate a reflected beam and room-side shadow casting; original-game visual parity remains unverified.
 
-## Remaining acceptance work
+See [gameplay tests](GAMEPLAY_TESTS.md), [native touch menus](NATIVE_TOUCH_MENU.md), [asset installation](ASSET_INSTALLATION.md), [mirror validation](MIRROR_REFLECTION.md), and [voice timing](VOICE_TEST_TIMING.md).
 
-- Atomic verified device-side asset activation, cancellation and preservation of existing saves.
-- Fix and retest inherited script issues: six missing standalone test-VM APIs and `trapLightEnable.lua` receiving a missing model-data array.
-- Physical touch/controller traversal, audio/microphone, interruption/background/resume and complete ending.
-- Matching corridor, bathroom, mirror/flashlight and encounter image comparisons against the Windows baseline and original-game references.
-- 20 minutes of representative presented-frame timing, including p95 intervals; loading reported separately.
-- Reboot/disconnected/offline standalone launch and development-signed final delivery.
+## Physical device findings
 
-The macOS walkthrough uses scripted inputs, including an injected voice result. Its successful ending does not prove microphone recognition or visual parity. No Windows reference baseline has been run in this implementation session.
+[DEVICE_REPORT.md](DEVICE_REPORT.md) records the tested build 3 run, timing limits and build 4 follow-up. Its 28,828 actual presentation observations include about 16m41s of startup, traversal, scripted waiting and idle time, not 20 minutes of representative gameplay. Guarded pre-voice traversal averages 29.997 FPS. One bathroom window has a 50 ms p95 interval; injected voice testing also produces half-second stalls. Build 4 removes the voice test's blocking wait, but its post-fix performance has not yet been measured.
+
+The foreground route missed the final puzzle because it attempted the ten steps before the timed introduction activated the puzzle. The updated test variant waits for the original f120/f160 sequences to finish, without changing game flags or progression. Its corrected ending still needs a physical-device run.
+
+An earlier XCTest attempt timed out while enabling Xcode automation: zero methods executed. The build 4 retry was refused before installing or launching anything because a new P.T. session was already running. That session was preserved; permission to close it for testing is pending. All processes created by the recorded build 3 run were confirmed gone before releasing its lease. Other projects' queued work remains intact.
+
+## Open acceptance gates
+
+1. Install build 4 and run the corrected foreground route through the ending, with working scene captures and thermal/power records.
+2. Verify physical touch/controller input, saves, microphone permission/recognition, audible audio, interruptions, disconnects and background/resume.
+3. Reproduce the Windows reference and compare matching corridor, bathroom, mirror, flashlight and encounter scenes against it and original-game references. The reference-machine connection details are still pending.
+4. Measure at least 20 minutes of representative play; report loading separately and verify the 30 FPS / p95 ≤40 ms goal. Investigate the bathroom pacing window rather than relying on the overall average.
+5. Verify launch after reboot with development tools disconnected and networking unavailable.
+
+The measured M2 content fits the current 1,144-image/64-cube descriptor contract. Per-material paging and a host texture-conversion cache have not been implemented; no demonstrated target-device format or descriptor failure currently requires them. They remain explicit architecture gaps if later content/capability evidence requires those fallback paths.

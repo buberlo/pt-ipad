@@ -1,0 +1,15 @@
+diff --git a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -3899,7 +3899,10 @@
+                 }
+                 app.microphone_db = std::max({-80.0f, loudest, app.microphone_db - 60.0f * dt});
+                 bool heard = recognizer->Feed(mic_samples);
+-                if (voice_file) heard = recognizer->Drain() || heard;
++                // Headless scripts advance faster than wall time and need deterministic
++                // recognition. Windowed file input must remain asynchronous, like the
++                // microphone, so a worker decode never stalls real-time presentation.
++                if (voice_file && !app.window) heard = recognizer->Drain() || heard;
+                 if (heard && !app.microphone_test) game.OnVoiceKeyword(recognizer->Keyword());
+                 app.microphone_hypothesis = recognizer->LastHypothesis();
+                 if (app.microphone_hypothesis.size() > 32) {

@@ -47,7 +47,7 @@ Outputs:
 
 The iOS Mach-O was verified as platform `IOS`, architecture `arm64`, minimum OS `18.0`, SDK `27.0`. Its identifier is `com.konradkern.pt.native`; it declares microphone access, landscape iPad support and Documents file sharing.
 
-The host suite passed all ten asset-free CTest targets, including touch actions mapped into the real input and options-menu code. A separate touch-state test passed concurrent movement, camera motion, taps, held zoom and lifecycle reset. The native Metal capability probe created the split image/sampler descriptor layout and passed a 2×2 GPU readback through its highest legal texture index. This validates the tested host driver contract; physical iPad gameplay has separate acceptance checks.
+The host suite passed all twelve asset-free CTest targets, including native asset installation, script compatibility, and touch actions mapped into the real input and options-menu code. A separate touch-state test passed concurrent movement, camera motion, taps, held zoom and lifecycle reset. The native Metal capability probe created the split image/sampler descriptor layout and passed a 2×2 GPU readback through its highest legal texture index. This validates the tested host driver contract; physical iPad gameplay has separate acceptance checks.
 
 ## Signing
 
@@ -58,10 +58,10 @@ python3 tools/sign_ios.py \
   --app build/ios-arm64/pt.app \
   --profile /absolute/private/path/development.mobileprovision \
   --identity 'Apple Development: local identity' \
-  --output artifacts/signed-local
+  --output artifacts/PT-Native-build4.ipa
 ```
 
-Re-sign after every executable, metadata or resource change. Building or signing does not prove installation, foreground launch or playable device behavior. Device ownership and the acceptance checklist apply before installation.
+The signer preserves its input bundle. It signs a private copy, verifies its entitlements and certificate against the profile, then publishes the IPA, JSON receipt and signed `artifacts/PT-Native-build4/pt.app`. Existing outputs are refused. Install that signed copy. Re-sign after every executable, metadata or resource change; use `--build-number` with the build wrapper to identify a new app build. Building or signing does not prove installation, foreground launch or playable device behavior. [Device testing](DEVICE_TESTING.md) requires shared-device ownership and separate acceptance evidence.
 
 ## Private data
 

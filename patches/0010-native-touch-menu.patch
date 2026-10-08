@@ -1,0 +1,688 @@
+diff --git a/src/engine/platform/input.cpp b/src/engine/platform/input.cpp
+--- a/src/engine/platform/input.cpp
++++ b/src/engine/platform/input.cpp
+@@ -446,8 +446,13 @@
+         if (touch_enabled_) touch_.Motion(event.tfinger.fingerID, event.tfinger.x, event.tfinger.y);
+         break;
+     case SDL_EVENT_FINGER_UP:
++        if (touch_enabled_) {
++            touch_.Motion(event.tfinger.fingerID, event.tfinger.x, event.tfinger.y);
++            touch_.Up(event.tfinger.fingerID);
++        }
++        break;
+     case SDL_EVENT_FINGER_CANCELED:
+-        if (touch_enabled_) touch_.Up(event.tfinger.fingerID);
++        if (touch_enabled_) touch_.Up(event.tfinger.fingerID, true);
+         break;
+     case SDL_EVENT_WILL_ENTER_BACKGROUND:
+     case SDL_EVENT_WINDOW_FOCUS_LOST:
+@@ -676,6 +681,7 @@
+         state.from_gamepad = true;
+     }
+     const TouchControls::State touch = touch_enabled_ ? touch_.Poll() : TouchControls::State{};
++    state.touch_enabled = touch_enabled_;
+     if (touch_enabled_ && pads_free) {
+         const glm::vec2 touch_move(touch.move_x, touch.move_y);
+         if (glm::length(touch_move) > glm::length(state.left_stick)) {
+@@ -692,6 +698,14 @@
+         if (touch.interact || touch.interact_pressed) raw |= kRawCross;
+         if (touch.zoom) raw |= kRawR3;
+         if (touch.back) raw |= kRawCircle;
++        if (mouse == MouseUse::Menu) {
++            state.menu_continue = touch.resume;
++            if (touch.click) {
++                state.pointer = glm::vec2(touch.pointer_x, touch.pointer_y) * touch_extent_;
++                state.pointer_valid = true;
++                click_edge_ = true;
++            }
++        }
+         state.gouge_pressed |= touch.interact_pressed;
+         pause_edge_ |= touch.pause;
+         any_edge_ |= touch.any;
+diff --git a/src/engine/platform/input.h b/src/engine/platform/input.h
+--- a/src/engine/platform/input.h
++++ b/src/engine/platform/input.h
+@@ -96,6 +96,8 @@
+     bool gouge_pressed = false;
+     bool house_pressed = false;
+     bool pointer_valid = false;
++    bool touch_enabled = false;
++    bool menu_continue = false;
+     glm::vec2 pointer{0.0f};
+     PromptStyle prompts;
+     bool vr_look = false;
+@@ -152,6 +154,10 @@
+     void ResetTransient();
+     void EnableTouch(bool enabled) { touch_enabled_ = enabled; touch_.Reset(); }
+     void SetTouchAspect(float aspect) { touch_.SetAspect(aspect); }
++    void SetTouchMenu(bool menu) { touch_.SetMenu(menu); }
++    void SetTouchExtent(float width, float height) {
++        if (width > 0 && height > 0) { touch_extent_ = {width, height}; touch_.SetAspect(width / height); }
++    }
+ 
+     InputSettings settings;
+ 
+@@ -176,6 +182,7 @@
+ 
+     bool touch_enabled_ = false;
+     TouchControls touch_;
++    glm::vec2 touch_extent_{1.0f};
+     std::vector<Pad> pads_;
+     uint64_t use_counter_ = 0;
+     float mouse_dx_ = 0.0f;
+diff --git a/src/engine/platform/touch_controls.h b/src/engine/platform/touch_controls.h
+--- a/src/engine/platform/touch_controls.h
++++ b/src/engine/platform/touch_controls.h
+@@ -11,7 +11,7 @@
+ // Each finger owns its original control until release; sliding cannot press a second button.
+ class TouchControls {
+ public:
+-    enum class Control { None, Move, Look, Interact, Zoom, Pause, Back };
++    enum class Control { None, Move, Look, Interact, Zoom, Pause, Back, Continue, Pointer };
+     struct Button { Control control; float x, y, radius; const char* label; };
+     static constexpr std::array<Button, 4> buttons{{
+         {Control::Interact, .90f, .72f, .065f, "Interact"},
+@@ -19,10 +19,19 @@
+         {Control::Pause, .92f, .10f, .045f, "Pause"},
+         {Control::Back, .77f, .10f, .045f, "Back"},
+     }};
++    static constexpr std::array<Button, 5> menu_buttons{{
++        {Control::Continue, .90f, .06f, .045f, "Continue"},
++        {Control::Back, .73f, .06f, .045f, "Back"},
++        {Control::Interact, .90f, .94f, .050f, "Select"},
++        {Control::Zoom, .73f, .94f, .045f, "Zoom"},
++        {Control::Move, .14f, .89f, .085f, "Navigate"},
++    }};
+     struct State {
+         float move_x = 0, move_y = 0, look_x = 0, look_y = 0;
+         bool interact = false, zoom = false, interact_pressed = false;
+         bool pause = false, back = false, any = false;
++        bool resume = false, click = false;
++        float pointer_x = 0, pointer_y = 0;
+     };
+ 
+     void Down(uint64_t id, float x, float y) {
+@@ -30,19 +39,23 @@
+         auto slot = std::find_if(fingers_.begin(), fingers_.end(), [](const Finger& f) { return !f.used; });
+         if (slot == fingers_.end()) return;
+         Control control = Control::None;
+-        for (const auto& b : buttons) {
++        const auto hit = [&](const auto& list) {
++          for (const auto& b : list) {
+             if (std::hypot((x - b.x) * aspect_, y - b.y) <= b.radius) {
+                 control = b.control;
+                 break;
+             }
+-        }
+-        if (control == Control::None) control = x < .45f ? Control::Move : Control::Look;
++          }
++        };
++        if (menu_) hit(menu_buttons); else hit(buttons);
++        if (control == Control::None) control = menu_ ? Control::Pointer : x < .45f ? Control::Move : Control::Look;
+         if (std::any_of(fingers_.begin(), fingers_.end(), [control](const Finger& f) { return f.used && f.control == control; })) return;
+         *slot = {true, id, control, x, y, x, y};
+         edges_.any = true;
+         edges_.interact_pressed |= control == Control::Interact;
+         edges_.pause |= control == Control::Pause;
+         edges_.back |= control == Control::Back;
++        edges_.resume |= control == Control::Continue;
+     }
+     void Motion(uint64_t id, float x, float y) {
+         Finger* f = Find(id);
+@@ -52,9 +65,19 @@
+             edges_.look_y += y - f->y;
+         }
+         f->x = x; f->y = y;
++        // Crossing a row or scrolling must not accidentally activate the row on release.
++        f->dragged |= std::hypot((x - f->start_x) * aspect_, y - f->start_y) > .018f;
+     }
+-    void Up(uint64_t id) { if (auto* f = Find(id)) *f = {}; }
++    void Up(uint64_t id, bool canceled = false) {
++        if (auto* f = Find(id)) {
++            if (!canceled && f->control == Control::Pointer && !f->dragged) {
++                edges_.click = true; edges_.pointer_x = f->x; edges_.pointer_y = f->y;
++            }
++            *f = {};
++        }
++    }
+     void Reset() { fingers_ = {}; edges_ = {}; }
++    void SetMenu(bool menu) { if (menu_ != menu) { Reset(); menu_ = menu; } }
+     void SetAspect(float aspect) { if (std::isfinite(aspect) && aspect > 0) aspect_ = aspect; }
+     State Poll() {
+         State result = edges_;
+@@ -79,6 +102,7 @@
+     struct Finger {
+         bool used = false; uint64_t id = 0; Control control = Control::None;
+         float start_x = 0, start_y = 0, x = 0, y = 0;
++        bool dragged = false;
+     };
+     static bool Finite(float x, float y) { return std::isfinite(x) && std::isfinite(y); }
+     Finger* Find(uint64_t id) {
+@@ -88,5 +112,6 @@
+     std::array<Finger, 10> fingers_{};
+     State edges_{};
+     float aspect_ = 16.f / 9.f;
++    bool menu_ = false;
+ };
+ }
+diff --git a/src/game/ui/game_ui.cpp b/src/game/ui/game_ui.cpp
+--- a/src/game/ui/game_ui.cpp
++++ b/src/game/ui/game_ui.cpp
+@@ -203,6 +203,7 @@
+     q.zoom_pressed |= input.zoom_pressed;
+     q.zoom_released |= input.zoom_released;
+     q.close |= input.close;
++    q.resume |= input.resume;
+     q.accept |= input.accept;
+     q.back |= input.back;
+     q.open_pc |= input.open_pc;
+@@ -311,12 +312,12 @@
+     last_caption_time_ = fx.caption_time;
+ 
+     menu_.SetPromptStyle(input.prompts);
++    menu_.SetTouchNavigation(input.touch_enabled);
+     MenuInput menu_input = MapMenuInput(input, previous_held_);
+     previous_held_ = input.held;
+     if (input.pointer_valid && canvas_ready_) {
+-        const glm::vec2 virtual_px = (input.pointer - canvas_.origin) / canvas_.scale;
+-        menu_input.pointer_valid = true;
+-        menu_input.pointer = glm::vec2(virtual_px.x - UiCanvas::kWidth * 0.5f, UiCanvas::kHeight * 0.5f - virtual_px.y) / UiCanvas::kUnit;
++        menu_input.pointer_valid = canvas_.ToUnits(input.pointer, menu_input.pointer);
++        if (!menu_input.pointer_valid) menu_input.click = menu_input.right_click = false;
+     }
+     QueueMenuInput(menu_input);
+     menu_input = std::exchange(queued_menu_input_, MenuInput{});
+diff --git a/src/game/ui/options_menu.cpp b/src/game/ui/options_menu.cpp
+--- a/src/game/ui/options_menu.cpp
++++ b/src/game/ui/options_menu.cpp
+@@ -87,6 +87,7 @@
+     out.zoom_pressed = (input.held & kPadZoom) != 0 && (previous_held & kPadZoom) == 0;
+     out.zoom_released = (input.held & kPadZoom) == 0 && (previous_held & kPadZoom) != 0;
+     out.close = input.pause;
++    out.resume = input.menu_continue;
+     out.accept = (input.raw_pressed & kRawCross) != 0;
+     out.back = (input.raw_pressed & kRawCircle) != 0 || input.cancel;
+     out.open_pc = out.accept && !input.confirm;
+@@ -291,9 +292,31 @@
+     view_.State(street_glow_).visible = street_shown_;
+     view_.State(entry_label_).text = std::string(PcText("pc_entry", text_language_));
+     if (page_ == Page::Pc || next_page_ == Page::Pc) {
+-        pc_.Apply(view_, text_language_);
++        pc_.Apply(view_, text_language_, touch_navigation_);
+     }
+     ApplyPrompts();
++    if (touch_navigation_) {
++        for (const auto& nodes : prompt_nodes_) {
++            view_.State(nodes.icon).visible = false;
++            view_.State(nodes.glow).visible = false;
++        }
++        view_.State(quit_label_).visible = false;
++        view_.State(entry_label_).text = "Settings";
++        view_.State(kBack).text = "Continue";
++    }
++}
++
++void OptionsMenu::SetTouchNavigation(bool enabled) {
++    if (touch_navigation_ == enabled) return;
++    touch_navigation_ = enabled;
++    if (!enabled && model_) {
++        for (const auto& nodes : prompt_nodes_) {
++            view_.State(nodes.icon).visible.reset();
++            view_.State(nodes.glow).visible.reset();
++        }
++        view_.State(quit_label_).visible.reset();
++        ApplyTexts();
++    }
+ }
+ 
+ void OptionsMenu::ApplyPrompts() {
+@@ -334,10 +357,14 @@
+     help.inline_picture.reset();
+     if (help.text) {
+         if (const size_t at = help.text->find(kAcceptToken); at != std::string::npos) {
+-            const PromptGlyph glyph = assets_->PromptPicture({PromptButton::Cross, KeyAction::Confirm, KeyAction::Confirm}, prompt_style_);
+-            help.text->replace(at, kAcceptToken.size(), "\xEE\x80\x80");
+-            help.inline_picture = UifInlinePicture{derived_->AddTexture(glyph.icon), derived_->AddTexture(glyph.glow), glyph.uv0, glyph.uv1,
+-                                                   glyph.width, glyph.body_width, glyph.body_height};
++            if (touch_navigation_) {
++                help.text->replace(at, kAcceptToken.size(), "Select");
++            } else {
++                const PromptGlyph glyph = assets_->PromptPicture({PromptButton::Cross, KeyAction::Confirm, KeyAction::Confirm}, prompt_style_);
++                help.text->replace(at, kAcceptToken.size(), "\xEE\x80\x80");
++                help.inline_picture = UifInlinePicture{derived_->AddTexture(glyph.icon), derived_->AddTexture(glyph.glow), glyph.uv0, glyph.uv1,
++                                                       glyph.width, glyph.body_width, glyph.body_height};
++            }
+         }
+     }
+     if (!prompts_shown_ || shown_prompts_ != prompt_style_.device) {
+@@ -543,6 +570,7 @@
+         return;
+     }
+     MenuInput input = raw_input;
++    if (input.resume) Close();
+     clock_ += dt;
+     while (clock_ + 1e-4f >= kGameFrame) {
+         clock_ -= kGameFrame;
+@@ -561,7 +589,7 @@
+         switch_frame_ = -1.0f;
+     }
+     const bool switching = switch_frame_ >= 0.0f;
+-    if (state_ == State::SetIn && input.close && page_ == Page::Original && !switching) {
++    if (state_ == State::SetIn && (input.close || (input.back && !input.toggle_horizontal)) && page_ == Page::Original && !switching) {
+         close_pending_ = true;
+         resume_ = resume_ || !resume_sent_;
+         resume_sent_ = true;
+@@ -633,7 +661,7 @@
+         ApplyTexts();
+         if (input.back || input.close) return;
+     }
+-    if (input.switch_column) {
++    if (input.switch_column && !touch_navigation_) {
+         quit_focused_ = true;
+         if (quit_confirming_) { Commit(game); game.RequestOptionsSave(); game.RequestQuit(); LogInfo("ui: quit selected from Options"); }
+         else { quit_confirming_ = true; ApplyTexts(); }
+@@ -713,7 +741,7 @@
+             zoom_started_ = false;
+         }
+     }
+-    if (input.close || close_pending_) {
++    if (input.close || (input.back && !input.toggle_horizontal) || close_pending_) {
+         close_pending_ = false;
+         Close();
+     }
+@@ -732,7 +760,7 @@
+         }
+     }
+     const glm::vec2 quit = view_.WorldPosition(quit_label_);
+-    if (units.x >= quit.x - 6.0f && units.x <= quit.x + 15.0f && std::abs(units.y - quit.y) <= 1.2f) {
++    if (!touch_navigation_ && units.x >= quit.x - 6.0f && units.x <= quit.x + 15.0f && std::abs(units.y - quit.y) <= 1.2f) {
+         if (quit_confirming_) { Commit(game); game.RequestOptionsSave(); game.RequestQuit(); LogInfo("ui: quit selected from Options"); }
+         else { quit_confirming_ = true; ApplyTexts(); }
+         return;
+diff --git a/src/game/ui/options_menu.h b/src/game/ui/options_menu.h
+--- a/src/game/ui/options_menu.h
++++ b/src/game/ui/options_menu.h
+@@ -29,6 +29,7 @@
+     bool zoom_pressed = false;
+     bool zoom_released = false;
+     bool close = false;
++    bool resume = false;
+     bool accept = false;
+     bool back = false;
+     bool open_pc = false;
+@@ -67,6 +68,7 @@
+     int TextLanguage() const { return text_language_; }
+     int Selector() const { return selector_; }
+     void SetPromptStyle(const PromptStyle& style) { prompt_style_ = style; }
++    void SetTouchNavigation(bool enabled);
+     PromptDevice Prompts() const { return shown_prompts_; }
+     const ui::UifModel* Model() const { return model_; }
+     float SelectionFlash(float frame) const;
+@@ -133,6 +135,7 @@
+     PromptStyle prompt_style_;
+     PromptDevice shown_prompts_ = PromptDevice::Keyboard;
+     bool prompts_shown_ = false;
++    bool touch_navigation_ = false;
+     uint32_t root_null_hash_ = 0;
+     UifView view_;
+     UiaPlayers players_;
+diff --git a/src/game/ui/pc_settings_page.cpp b/src/game/ui/pc_settings_page.cpp
+--- a/src/game/ui/pc_settings_page.cpp
++++ b/src/game/ui/pc_settings_page.cpp
+@@ -523,12 +523,13 @@
+     return row.values[shown].empty();
+ }
+ 
+-void PcSettingsPage::Apply(UifView& view, int language) const {
++void PcSettingsPage::Apply(UifView& view, int language, bool touch_navigation) const {
+     auto text = [&](uint16_t id, std::string_view key) {
+         view.State(id).text = std::string(PcText(key, language));
+         view.State(id).font_type = UiFontType::PcSystem;
+     };
+     text(title_, source_ ? source_->Title() : "pc_title");
++    if (touch_navigation && (!source_ || source_->Title() == "pc_title")) view.State(title_).text = "Settings";
+     text(back_text_, "pc_back");
+     const bool quit_selected = cursor_ == static_cast<int>(rows_.size()) + 1;
+     text(quit_text_, quit_selected && confirming_ ? "pc_quit_confirm" : "pc_quit");
+@@ -538,6 +539,10 @@
+     view.State(navigation_text_).font_type = UiFontType::PcSystem;
+     const bool two_columns = std::any_of(sections_.begin(), sections_.end(), [](const PcSettingSection& s) { return s.column > 0; });
+     view.State(navigation_text_).visible = (source_ && source_->IsLoopBrowser()) || two_columns || gallery != PcGallery::None;
++    if (touch_navigation) {
++        view.State(navigation_text_).text = "Tap a row, or drag Navigate and tap Select. Back returns.";
++        view.State(navigation_text_).visible = true;
++    }
+     view.State(back_text_).font_type = UiFontType::PcSystem;
+     view.State(quit_text_).font_type = UiFontType::PcSystem;
+     view.State(back_text_).color = glm::vec4(1.0f, 1.0f, 1.0f, cursor_ == static_cast<int>(rows_.size()) ? 1.0f : 0.55f);
+diff --git a/src/game/ui/pc_settings_page.h b/src/game/ui/pc_settings_page.h
+--- a/src/game/ui/pc_settings_page.h
++++ b/src/game/ui/pc_settings_page.h
+@@ -33,7 +33,7 @@
+     void Refresh();
+     Result Update(Game& game, const MenuInput& input, float dt);
+     void Step(bool active);
+-    void Apply(UifView& view, int language) const;
++    void Apply(UifView& view, int language, bool touch_navigation = false) const;
+     int RowAt(glm::vec2 units) const;
+     bool BackAt(glm::vec2 units) const;
+     bool QuitAt(glm::vec2 units) const;
+diff --git a/src/game/ui/uif_view.cpp b/src/game/ui/uif_view.cpp
+--- a/src/game/ui/uif_view.cpp
++++ b/src/game/ui/uif_view.cpp
+@@ -59,6 +59,28 @@
+     canvas.scale = std::min(canvas.extent.x / kWidth, canvas.extent.y / kHeight);
+     canvas.origin = (canvas.extent - glm::vec2(kWidth, kHeight) * canvas.scale) * 0.5f;
+     return canvas;
++}
++
++bool UiCanvas::ToUnits(glm::vec2 target, glm::vec2& units) const {
++    if (!(scale > 0.0f) || !std::isfinite(target.x) || !std::isfinite(target.y)) return false;
++    const glm::vec2 px = (target - origin) / scale;
++    if (px.x < 0 || px.y < 0 || px.x >= kWidth || px.y >= kHeight) return false;
++    units = glm::vec2(px.x - kWidth * .5f, kHeight * .5f - px.y) / kUnit;
++    return true;
++}
++
++bool UiCanvas::MapDisplayPoint(glm::vec2 pixels, VkExtent2D display, VkExtent2D render, glm::vec2& out) {
++    if (!display.width || !display.height || !render.width || !render.height ||
++        !std::isfinite(pixels.x) || !std::isfinite(pixels.y)) return false;
++    // Match the integer shown extent and centered offset in Renderer::EndFrame.
++    const float fit = std::min(static_cast<float>(display.width) / render.width, static_cast<float>(display.height) / render.height);
++    const VkExtent2D shown{std::max(1u, static_cast<uint32_t>(render.width * fit)),
++                           std::max(1u, static_cast<uint32_t>(render.height * fit))};
++    const glm::vec2 offset((display.width - shown.width) / 2, (display.height - shown.height) / 2);
++    const glm::vec2 local = pixels - offset;
++    if (local.x < 0 || local.y < 0 || local.x >= shown.width || local.y >= shown.height) return false;
++    out = local * glm::vec2(static_cast<float>(render.width) / shown.width, static_cast<float>(render.height) / shown.height);
++    return true;
+ }
+ 
+ void DrawText(ui::UiBatch& batch, const UiCanvas& canvas, const UiFont& font, const ui::TextLayout& layout, glm::vec4 color, ui::UiBlend blend,
+diff --git a/src/game/ui/uif_view.h b/src/game/ui/uif_view.h
+--- a/src/game/ui/uif_view.h
++++ b/src/game/ui/uif_view.h
+@@ -29,6 +29,8 @@
+     static UiCanvas Fit(VkExtent2D target);
+     glm::vec2 ToTarget(glm::vec2 virtual_px) const { return origin + virtual_px * scale; }
+     glm::vec2 FromUnits(glm::vec2 units) const { return ToTarget({kWidth * 0.5f + units.x * kUnit, kHeight * 0.5f - units.y * kUnit}); }
++    bool ToUnits(glm::vec2 target, glm::vec2& units) const;
++    static bool MapDisplayPoint(glm::vec2 pixels, VkExtent2D display, VkExtent2D render, glm::vec2& out);
+ };
+ 
+ struct UifInlinePicture {
+diff --git a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -3393,6 +3393,12 @@
+     bool was_focused = true;
+     float applied_volume = -1.0f;
+     while (running) {
++#if PT_IOS
++        input.SetTouchMenu(ui_ready && ui.MenuOpen());
++        int touch_pixels_w = 0, touch_pixels_h = 0;
++        if (app.window && SDL_GetWindowSizeInPixels(app.window, &touch_pixels_w, &touch_pixels_h))
++            input.SetTouchExtent(static_cast<float>(touch_pixels_w), static_cast<float>(touch_pixels_h));
++#endif
+         bool visible = PumpEvents(app, &input, running) || vr != nullptr;
+         if (vr) {
+             vr->BeginLoop(running);
+@@ -3507,6 +3513,8 @@
+         pending_input.confirm = pending_input.confirm || polled.confirm;
+         pending_input.cancel = pending_input.cancel || polled.cancel;
+         pending_input.any_button = pending_input.any_button || polled.any_button;
++        pending_input.touch_enabled = polled.touch_enabled;
++        pending_input.menu_continue = pending_input.menu_continue || polled.menu_continue;
+         pending_input.from_gamepad = polled.from_gamepad;
+         pending_input.prompts = polled.prompts;
+         pending_input.vr_look = polled.vr_look;
+@@ -3515,7 +3523,15 @@
+         pending_input.click = pending_input.click || polled.click;
+         pending_input.right_click = pending_input.right_click || polled.right_click;
+         pending_input.house_pressed = pending_input.house_pressed || polled.house_pressed;
+-        pending_input.pointer_valid = false;
++        if (polled.pointer_valid) {
++            pending_input.pointer = polled.pointer;
++            pending_input.pointer_valid = true;
++#if PT_IOS
++            pending_input.pointer_valid = pt::game::UiCanvas::MapDisplayPoint(polled.pointer,
++                {static_cast<uint32_t>(touch_pixels_w), static_cast<uint32_t>(touch_pixels_h)}, app.renderer.RenderExtent(), pending_input.pointer);
++            if (!pending_input.pointer_valid) pending_input.click = pending_input.right_click = false;
++#endif
++        }
+         if (app.window && !mouse_captured && !PT_IOS) {
+             float x = 0.0f;
+             float y = 0.0f;
+@@ -3722,6 +3738,8 @@
+             pending_input.raw_pressed = 0;
+             pending_input.pause = pending_input.confirm = pending_input.cancel = pending_input.any_button = false;
+             pending_input.click = pending_input.right_click = pending_input.house_pressed = false;
++            pending_input.menu_continue = false;
++            pending_input.pointer_valid = false;
+             accumulator -= step;
+             ++ticks;
+         }
+@@ -3970,15 +3988,31 @@
+             {
+                 const ImVec2 size = ImGui::GetIO().DisplaySize;
+                 auto* draw = ImGui::GetForegroundDrawList();
+-                for (const auto& button : pt::TouchControls::buttons) {
++                const bool touch_menu = ui_ready && ui.MenuOpen();
++                const auto draw_button = [&](const pt::TouchControls::Button& button) {
+                     const ImVec2 center(button.x * size.x, button.y * size.y);
+                     draw->AddCircleFilled(center, button.radius * size.y, IM_COL32(0, 0, 0, 80));
+                     draw->AddCircle(center, button.radius * size.y, IM_COL32(255, 255, 255, 110));
+-                    const ImVec2 label = ImGui::CalcTextSize(button.label);
+-                    draw->AddText(ImVec2(center.x - label.x * .5f, center.y - label.y * .5f), IM_COL32(255,255,255,190), button.label);
++                    const char* text = button.label;
++                    if (touch_menu && button.control == pt::TouchControls::Control::Interact &&
++                        ui.Menu().CurrentPage() == pt::game::OptionsMenu::Page::Original) text = "Settings";
++                    const float font_size = touch_menu ? std::max(18.0f, size.y * .022f) : ImGui::GetFontSize();
++                    const ImVec2 label = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0, text);
++                    draw->AddText(ImGui::GetFont(), font_size, ImVec2(center.x - label.x * .5f, center.y - label.y * .5f),
++                                  IM_COL32(255,255,255,230), text);
++                };
++                if (touch_menu) {
++                    for (const auto& button : pt::TouchControls::menu_buttons) draw_button(button);
++                    const char* hint = "Tap settings to change them";
++                    const float font_size = std::max(18.0f, size.y * .022f);
++                    const ImVec2 label = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0, hint);
++                    draw->AddText(ImGui::GetFont(), font_size, ImVec2(size.x * .5f - label.x * .5f, size.y * .055f),
++                                  IM_COL32(255,255,255,230), hint);
++                } else {
++                    for (const auto& button : pt::TouchControls::buttons) draw_button(button);
++                    draw->AddCircle(ImVec2(.17f * size.x, .78f * size.y), .13f * size.y, IM_COL32(255,255,255,75));
++                    draw->AddText(ImVec2(.13f * size.x, .78f * size.y), IM_COL32(255,255,255,120), "Move");
+                 }
+-                draw->AddCircle(ImVec2(.17f * size.x, .78f * size.y), .13f * size.y, IM_COL32(255,255,255,75));
+-                draw->AddText(ImVec2(.13f * size.x, .78f * size.y), IM_COL32(255,255,255,120), "Move");
+             }
+ #endif
+             ImGui::Render();
+diff --git a/tests/ipad_input_test.cpp b/tests/ipad_input_test.cpp
+--- a/tests/ipad_input_test.cpp
++++ b/tests/ipad_input_test.cpp
+@@ -1,42 +1,168 @@
+ #include <SDL3/SDL.h>
+ #include "engine/platform/input.h"
+ #include "game/ui/options_menu.h"
++#include "game/game.h"
++#include "engine/render/texture_manager.h"
+ #include <cstdio>
++#include <cmath>
+ 
+-int main() {
++int main(int argc, char** argv) {
+     if (!SDL_Init(SDL_INIT_EVENTS)) return 1;
+     pt::InputDevice input;
+     input.EnableTouch(true);
++    input.SetTouchExtent(2732, 2048);
+     auto finger = [&](SDL_EventType type, float x, float y) {
+         SDL_Event e{};
+         e.type = type; e.tfinger.fingerID = 1; e.tfinger.x = x; e.tfinger.y = y;
+         input.ProcessEvent(e);
+     };
++    auto tap = [&](float x, float y, pt::MouseUse use = pt::MouseUse::Menu) {
++        finger(SDL_EVENT_FINGER_DOWN, x, y);
++        finger(SDL_EVENT_FINGER_UP, x, y);
++        return input.Poll(false, use);
++    };
+     int failed = 0;
+     auto expect = [&](bool value, const char* name) {
+-        if (!value) { std::fprintf(stderr, "FAIL %s\n", name); ++failed; }
++        std::printf("%s %s\n", value ? "PASS" : "FAIL", name);
++        failed += !value;
+     };
+-    finger(SDL_EVENT_FINGER_DOWN, .90f, .72f);
+-    finger(SDL_EVENT_FINGER_UP, .90f, .72f);
+-    auto state = input.Poll(false, pt::MouseUse::Menu);
++    auto state = tap(.90f, .72f, pt::MouseUse::Look);
++    expect(state.gouge_pressed && (state.raw_pressed & pt::kRawCross), "gameplay interact retains gouge and cross actions");
++    input.Poll(false, pt::MouseUse::Look);
++    input.SetTouchMenu(true);
++    state = tap(.90f, .94f);
+     auto menu = pt::game::MapMenuInput(state, 0);
+-    expect(menu.accept && menu.open_pc, "touch opens settings through controller action");
+-    expect(!menu.toggle_vertical && !menu.toggle_horizontal, "interact does not change camera inversion");
+-    expect(state.gouge_pressed, "interact supplies original cross-button gouge action");
++    expect(menu.accept && menu.open_pc && !state.pointer_valid, "settings/select button activates exactly once without pointer click");
++    expect(!menu.toggle_vertical && !menu.toggle_horizontal, "select does not change camera inversion");
+     input.Poll(false, pt::MouseUse::Menu);
+-    finger(SDL_EVENT_FINGER_DOWN, .77f, .10f);
+-    finger(SDL_EVENT_FINGER_UP, .77f, .10f);
+-    menu = pt::game::MapMenuInput(input.Poll(false, pt::MouseUse::Menu), 0);
+-    expect(menu.back && !menu.toggle_horizontal, "back does not change camera inversion");
+-    finger(SDL_EVENT_FINGER_DOWN, .90f, .72f);
++    menu = pt::game::MapMenuInput(tap(.73f, .06f), 0);
++    expect(menu.back && !menu.toggle_horizontal, "native back preserves camera inversion");
++    menu = pt::game::MapMenuInput(tap(.90f, .06f), 0);
++    expect(menu.resume && !menu.accept && !menu.close, "continue has a distinct resume action on any menu page");
++    state = tap(.65f, .55f);
++    expect(state.click && state.pointer_valid && std::abs(state.pointer.x - 1775.8f) < .01f && std::abs(state.pointer.y - 1126.4f) < .01f,
++           "short menu tap preserves output pixel location");
++    state = input.Poll(false, pt::MouseUse::Menu);
++    expect(!state.click && !state.pointer_valid, "pointer tap is a single edge");
++    finger(SDL_EVENT_FINGER_DOWN, .60f, .50f);
++    finger(SDL_EVENT_FINGER_MOTION, .70f, .50f);
++    finger(SDL_EVENT_FINGER_MOTION, .60f, .50f);
++    finger(SDL_EVENT_FINGER_UP, .60f, .50f);
++    expect(!input.Poll(false, pt::MouseUse::Menu).click, "drag returning to its start does not activate a menu row");
++    finger(SDL_EVENT_FINGER_DOWN, .60f, .50f);
++    finger(SDL_EVENT_FINGER_CANCELED, .60f, .50f);
++    expect(!input.Poll(false, pt::MouseUse::Menu).click, "canceled menu touch never activates a row");
++    finger(SDL_EVENT_FINGER_DOWN, .14f, .89f);
++    finger(SDL_EVENT_FINGER_MOTION, .14f, .70f);
++    state = input.Poll(false, pt::MouseUse::Menu);
++    expect((state.raw_held & pt::kRawUp) && !state.pointer_valid && state.mouse_look == glm::vec2(0), "Navigate joystick supplies menu directions without camera motion");
++    input.SetTouchMenu(false);
++    finger(SDL_EVENT_FINGER_UP, .14f, .70f);
++    state = input.Poll(false, pt::MouseUse::Look);
++    expect(state.raw_held == 0 && state.left_stick == glm::vec2(0) && !state.click, "menu exit cancels owned fingers");
++    finger(SDL_EVENT_FINGER_DOWN, .65f, .40f);
++    finger(SDL_EVENT_FINGER_MOTION, .75f, .45f);
++    state = input.Poll(false, pt::MouseUse::Look);
++    expect(state.mouse_look.x > 0 && state.mouse_look.y > 0, "gameplay swipe still looks around");
++    input.SetTouchMenu(true);
++    state = input.Poll(false, pt::MouseUse::Menu);
++    expect(state.mouse_look == glm::vec2(0) && !state.click, "menu entry cancels look motion");
++    finger(SDL_EVENT_FINGER_DOWN, .90f, .94f);
+     SDL_Event background{}; background.type = SDL_EVENT_WILL_ENTER_BACKGROUND;
+     input.ProcessEvent(background);
+     state = input.Poll(false, pt::MouseUse::Look);
+     expect(state.raw_held == 0 && state.raw_pressed == 0 && !state.any_button, "background cancels touch edges and holds");
+     input.EnableTouch(false);
+-    finger(SDL_EVENT_FINGER_DOWN, .90f, .72f);
+-    state = input.Poll(false, pt::MouseUse::Look);
++    state = tap(.90f, .94f);
+     expect(state.raw_held == 0 && !state.any_button, "disabled touch does not affect desktop input");
++
++    // Check both stages of actual output->fixed render->UI coordinates, including black bars.
++    const VkExtent2D render{1920, 1080};
++    const auto canvas = pt::game::UiCanvas::Fit(render);
++    for (VkExtent2D display : {VkExtent2D{2732,2048}, VkExtent2D{2160,1620}, VkExtent2D{1920,1080}, VkExtent2D{2560,1080}}) {
++        const float scale = std::min(float(display.width) / render.width, float(display.height) / render.height);
++        const uint32_t shown_w = uint32_t(render.width * scale), shown_h = uint32_t(render.height * scale);
++        const glm::vec2 offset((display.width-shown_w)/2, (display.height-shown_h)/2);
++        const glm::vec2 desired(41.f, -13.f);
++        const glm::vec2 px = canvas.FromUnits(desired) * glm::vec2(float(shown_w)/render.width, float(shown_h)/render.height) + offset;
++        glm::vec2 mapped{}, units{};
++        expect(pt::game::UiCanvas::MapDisplayPoint(px,display,render,mapped) && canvas.ToUnits(mapped,units) && glm::length(units-desired) < .0001f,
++               "camera row hits same UI position at native, letterboxed and wide output sizes");
++        if (shown_h < display.height)
++            expect(!pt::game::UiCanvas::MapDisplayPoint({display.width*.5f, 1},display,render,mapped), "top black bar cannot activate menu");
++        if (shown_w < display.width)
++            expect(!pt::game::UiCanvas::MapDisplayPoint({1, display.height*.5f},display,render,mapped), "side black bar cannot activate menu");
++    }
++
++    // Optional original-assets integration. Default CTest remains asset-free.
++    if (argc == 2) {
++        pt::Vfs vfs;
++        pt::vk::Context ctx;
++        pt::TextureManager textures;
++        if (!vfs.Mount(argv[1]) || !ctx.Init(nullptr, false) || !textures.Init(ctx)) return 2;
++        {
++            pt::SceneRenderer scene;
++            pt::ModelCache models(vfs, scene, textures);
++            pt::game::Game game(vfs, models);
++            pt::game::UiAssets assets;
++            pt::game::OptionsMenu options;
++            if (!assets.Init(vfs, textures) || !options.Init(assets)) return 2;
++            struct Settings : pt::game::PcSettingsSource {
++                int value = 0;
++                std::vector<pt::game::PcSettingSection> Sections() override {
++                    pt::game::PcSettingRow row; row.id=1; row.label="pc_vsync"; row.values={"pc_off","pc_on"}; row.value=value;
++                    return {{"pc_section_display",0,{row}}};
++                }
++                void Set(int, int v) override { value=v; }
++                void Activate(int) override {}
++            } settings;
++            options.SetPcSource(&settings);
++            options.SetTouchNavigation(true);
++            input.EnableTouch(true); input.SetTouchMenu(true); input.SetTouchExtent(2732,2048);
++            auto settle = [&] { for (int n=0;n<180;++n) {options.AdvancePresentation(1.f/60); options.Update(game,{},1.f/60);} };
++            auto apply = [&](pt::InputState s) {
++                auto m=pt::game::MapMenuInput(s,0);
++                if (s.pointer_valid) {
++                    glm::vec2 mapped;
++                    m.pointer_valid=pt::game::UiCanvas::MapDisplayPoint(s.pointer,{2732,2048},render,mapped) && canvas.ToUnits(mapped,m.pointer);
++                }
++                options.Update(game,m,1.f/60); input.Poll(false,pt::MouseUse::Menu);
++            };
++            options.Show(game,true); settle();
++            apply(tap(.73f,.06f)); settle();
++            expect(!options.IsOpen() && options.TakeResume(), "actual first-boot options closes and signals resume from touch Back");
++            options.Show(game,true); settle();
++            apply(tap(.90f,.06f)); settle();
++            expect(!options.IsOpen() && options.TakeResume(), "actual first-boot options closes from touch Continue");
++            options.Show(game,false); settle();
++            // Resolve original model row positions, rather than hard-code a particular asset layout.
++            pt::game::UifView original; original.Bind(options.Model(), &assets);
++            auto tap_units = [&](glm::vec2 u) {
++                const glm::vec2 p=canvas.FromUnits(u)*glm::vec2(2732.f/1920,1536.f/1080)+glm::vec2(0,256);
++                apply(tap(p.x/2732,p.y/2048));
++            };
++            const bool old_y=game.Options().invert_y, old_x=game.Options().invert_x;
++            tap_units(original.WorldPosition(79));
++            expect(game.Options().invert_y != old_y, "touching original vertical camera row changes inversion");
++            tap_units(original.WorldPosition(94));
++            expect(game.Options().invert_x != old_x && options.IsOpen(), "touching original horizontal camera row changes inversion without closing");
++            apply(tap(.90f,.94f)); settle();
++            expect(options.CurrentPage()==pt::game::OptionsMenu::Page::Pc, "touch Settings reaches real PC settings page");
++            apply(tap(.90f,.94f));
++            expect(settings.value==1, "touch Select changes real settings row");
++            apply(tap(.73f,.06f)); settle();
++            expect(options.CurrentPage()==pt::game::OptionsMenu::Page::Original && options.IsOpen(), "touch Back returns from settings to original options");
++            apply(tap(.90f,.94f)); settle();
++            apply(tap(.90f,.06f)); settle();
++            expect(!options.IsOpen() && options.TakeResume(), "touch Continue exits settings directly to gameplay");
++            options.SetTouchNavigation(false); options.Show(game,false); settle();
++            pt::InputState keyboard; keyboard.cancel=true;
++            const bool was_x=game.Options().invert_x;
++            apply(keyboard);
++            expect(options.IsOpen() && game.Options().invert_x != was_x, "desktop Backspace keeps horizontal inversion behavior");
++        }
++        vkDeviceWaitIdle(ctx.device); textures.Shutdown(); ctx.Shutdown();
++    }
+     SDL_Quit();
+     return failed ? 1 : 0;
+ }

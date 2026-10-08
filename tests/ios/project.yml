@@ -1,0 +1,38 @@
+name: PTDeviceChecks
+options:
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "2"
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGN_STYLE: Automatic
+targets:
+  PTHarness:
+    type: application
+    platform: iOS
+    sources: [PTHarness]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.konradkern.pt.harness
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  PTDeviceTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [PTDeviceTests]
+    dependencies:
+      - target: PTHarness
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.konradkern.pt.harness.tests
+        TEST_TARGET_NAME: PTHarness
+schemes:
+  PTDeviceChecks:
+    build:
+      targets:
+        PTHarness: all
+        PTDeviceTests: [test]
+    test:
+      targets: [PTDeviceTests]
+      gatherCoverageData: false

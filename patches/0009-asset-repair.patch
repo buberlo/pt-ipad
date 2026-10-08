@@ -1,0 +1,76 @@
+diff --git a/src/engine/platform/asset_install.cpp b/src/engine/platform/asset_install.cpp
+--- a/src/engine/platform/asset_install.cpp
++++ b/src/engine/platform/asset_install.cpp
+@@ -2,6 +2,7 @@
+ #include <array>
+ #include <charconv>
+ #include <map>
++#include <limits>
+ #include <memory>
+ #include <set>
+ #include <stdexcept>
+@@ -270,15 +271,23 @@
+         std::string name(asset.name);
+         bool listed = assets.members.contains(name), present = found.contains(name);
+         if (!listed && !present && !asset.required) continue;
+-        if (!listed || !present) Invalid("Missing asset or manifest entry: " + name);
++        if (!listed) Invalid("Missing asset manifest entry: " + name);
+         const auto& record = Member(assets, name, Json::Object);
+         const auto& size = Member(record, "bytes", Json::Number).text;
+         uint64_t length = 0;
+         auto number = std::from_chars(size.data(), size.data() + size.size(), length);
+         if (number.ec != std::errc() || number.ptr != size.data() + size.size() || length != asset.bytes || Member(record, "sha256", Json::String).text != asset.sha256) Invalid("Manifest does not match the compiled asset catalogue: " + name);
+-        auto file = OpenFile(directory, name.c_str(), asset.bytes);
++        // An owned current installation may be incomplete or damaged. The manifest
++        // must still match the compiled catalogue; every existing child must remain
++        // an allowed regular single-link file. Only the new incoming installation
++        // must have all required files with exact lengths and hashes before exchange.
++        if (!present) {
++            if (!hash) continue;
++            Invalid("Missing asset: " + name);
++        }
++        auto file = OpenFile(directory, name.c_str(), hash ? asset.bytes : std::numeric_limits<uint64_t>::max());
+         auto before = Fstat(file.value);
+-        if (uint64_t(before.st_size) != asset.bytes) Invalid("Incorrect asset length: " + name);
++        if (hash && uint64_t(before.st_size) != asset.bytes) Invalid("Incorrect asset length: " + name);
+         if (hash) {
+             CC_SHA256_CTX context; CC_SHA256_Init(&context);
+             uint64_t done = 0;
+diff --git a/tests/asset_install_test.cpp b/tests/asset_install_test.cpp
+--- a/tests/asset_install_test.cpp
++++ b/tests/asset_install_test.cpp
+@@ -115,6 +115,34 @@
+             Expect(result.status == InstallStatus::Ready && result.staging_rejected, "valid current installation not retained");
+             Expect(Read(t.root / "CUSA01127/chunk1.psarc") == "abc", "bad incoming replaced current");
+         });
++        Test("verified incoming repairs missing truncated and oversized owned data", [] {
++            for (const char* state : {"missing", "truncated", "oversized"}) {
++                Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming");
++                auto old = t.root / "CUSA01127/chunk1.psarc";
++                if (std::string_view(state) == "missing") fs::remove(old);
++                else Write(old, std::string_view(state) == "truncated" ? "a" : "abcd");
++                Write(t.root / "CUSA01127/source.txt", state);
++                Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Activated, "owned damaged data could not be repaired");
++                Expect(VerifyInstallation(t.root / "CUSA01127", fixture).ready(), "replacement data not valid");
++                auto previous = t.root / "CUSA01127.previous";
++                Expect(Read(previous / "source.txt") == state, "previous installation not retained");
++                if (std::string_view(state) == "missing") Expect(!fs::exists(previous / "chunk1.psarc"), "missing old file was manufactured");
++                else Expect(Read(previous / "chunk1.psarc") == (std::string_view(state) == "truncated" ? "a" : "abcd"), "old damaged file was changed");
++                t.SavesIntact();
++            }
++        });
++        Test("repair still refuses unowned manifests and unsafe current files", [] {
++            Temp t; Assets(t.root / "CUSA01127"); Assets(t.root / "CUSA01127.incoming");
++            auto manifest = Manifest(); Replace(manifest, "ba7816bf", "00000000");
++            Write(t.root / "CUSA01127/import-manifest.json", manifest);
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "unowned manifest displaced");
++            Write(t.root / "CUSA01127/import-manifest.json", Manifest());
++            fs::remove(t.root / "CUSA01127/chunk1.psarc");
++            fs::create_symlink(t.root / "saves/keep.bin", t.root / "CUSA01127/chunk1.psarc");
++            Expect(PrepareInstallation(t.root, fixture).status == InstallStatus::Invalid, "unsafe current symlink displaced");
++            Expect(!fs::exists(t.root / "CUSA01127.previous"), "unsafe current installation moved");
++            t.SavesIntact();
++        });
+         Test("malformed manifest matrix", [] {
+             Temp t; Assets(t.root / "CUSA01127");
+             const auto valid = Manifest();
