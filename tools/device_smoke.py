@@ -63,6 +63,7 @@ def main():
     p.add_argument("--device", required=True)
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--seconds", type=int, default=45, choices=range(10, 181))
+    p.add_argument("--natural-startup", action="store_true", help="test fresh startup and original intro without forcing a floor")
     p.add_argument("--under-lease", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args()
     args.output = args.output.absolute()
@@ -139,9 +140,12 @@ def main():
         if any(is_pt_executable(x.get("executable")) for x in running):
             raise RuntimeError("PT started during staging; preserve the existing session")
         attempted = True
+        arguments = ["--activate", BUNDLE, "--no-save", "--no-mods"]
+        if not args.natural_startup:
+            arguments.extend(["--start-floor", "f010"])
+        arguments.extend(["--settings", str(device_dir / "session.ini"), "--log", str(device_dir / "pt.log")])
         command("launch", ["process", "launch"],
-                ["--activate", BUNDLE, "--no-save", "--no-mods", "--start-floor", "f010",
-                 "--settings", str(device_dir / "session.ini"), "--log", str(device_dir / "pt.log")], timeout=30)
+                arguments, timeout=30)
         owned = launched_process(args.output / "launch.json", before)
         if owned is None:
             raise RuntimeError("launch ownership is ambiguous; the device lease must remain reserved")
@@ -181,11 +185,13 @@ def main():
                             command("terminate", ["process", "terminate"], ["--pid", str(pid)], teardown=True)
                         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                             print(f"Termination request failed; checking device state: {error}", file=sys.stderr, flush=True)
-                        for attempt in range(3):
+                        for attempt in range(4):
                             current = processes(f"processes-after-terminate-{attempt}", teardown=True)
                             if not owned_present(current, owned):
                                 cleanup_confirmed = True
                                 break
+                            if attempt == 1:
+                                command("kill", ["process", "terminate"], ["--pid", str(pid), "--kill"], teardown=True)
                             time.sleep(0.25)
                 except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
                     print(f"Device cleanup unconfirmed: {error}", file=sys.stderr, flush=True)
