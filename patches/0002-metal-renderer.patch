@@ -1,0 +1,1218 @@
+diff --git a/shaders/common.glsl b/shaders/common.glsl
+index 430df6c..3b70a46 100644
+--- a/shaders/common.glsl
++++ b/shaders/common.glsl
+@@ -52,8 +52,8 @@ struct Material {
+     vec4 extra;
+ };
+ 
+-layout(set = 0, binding = 0) uniform sampler2D textures[];
+-layout(set = 0, binding = 2) uniform samplerCube cube_textures[];
++#extension GL_GOOGLE_include_directive : require
++#include "texture_bindings.glsl"
+ layout(std430, set = 0, binding = 1) readonly buffer Materials {
+     Material materials[];
+ };
+diff --git a/shaders/forward.frag b/shaders/forward.frag
+index abe32ca..5769aff 100644
+--- a/shaders/forward.frag
++++ b/shaders/forward.frag
+@@ -24,7 +24,7 @@ layout(location = 0) out vec4 out_color;
+ float g_mip_bias = 0.0;
+ 
+ vec4 Tex(uint index, vec2 uv) {
+-    return texture(textures[nonuniformEXT(index)], uv, g_mip_bias);
++    return texture(PT_TEXTURE(index), uv, g_mip_bias);
+ }
+ 
+ vec4 ForwardOut(vec3 encoded_premultiplied, float a) {
+@@ -130,7 +130,7 @@ void main() {
+         highlight += c * spec * ndl;
+     }
+     uint cube = (m.flags & MAT_COMMON_REFLECTION) != 0u ? uint(draw.aux1.w) : m.aux0;
+-    vec3 refl = texture(cube_textures[nonuniformEXT(cube)], Rw).rgb;
++    vec3 refl = texture(PT_CUBE(cube), Rw).rgb;
+     vec3 tint = (1.0 - F) * (m.albedo_factor.rgb - m.extra.rgb * refl);
+     vec3 color = (m.albedo_factor.w * tint + m.extra.rgb * refl) * irradiance + highlight;
+     float dither = ImgFetch(RES_DITHER, ivec2(gl_FragCoord.xy) & 7).z * 0.0078125;
+diff --git a/shaders/gbuffer.frag b/shaders/gbuffer.frag
+index 22fb9b2..a05ad2e 100644
+--- a/shaders/gbuffer.frag
++++ b/shaders/gbuffer.frag
+@@ -27,20 +27,20 @@ layout(location = 2) out vec4 out_material;
+ float g_mip_bias = 0.0;
+ 
+ vec4 Tex(uint index, vec2 uv) {
+-    return texture(textures[nonuniformEXT(index)], uv, g_mip_bias);
++    return texture(PT_TEXTURE(index), uv, g_mip_bias);
+ }
+ 
+ vec4 TexPoint(uint index, vec2 uv) {
+-    ivec2 size = textureSize(textures[nonuniformEXT(index)], 0);
++    ivec2 size = textureSize(PT_TEXTURE(index), 0);
+     ivec2 texel = ivec2(fract(uv) * vec2(size)) % size;
+-    return texelFetch(textures[nonuniformEXT(index)], texel, 0);
++    return texelFetch(PT_TEXTURE(index), texel, 0);
+ }
+ 
+ vec3 ViewReflection(vec3 albedo, vec3 n, vec3 view_dir, float specular, float reflection, float u) {
+     vec4 color = Img(RES_MATERIAL, SMP_POINT_CLAMP, vec2(u, 0.25));
+     vec4 param = Img(RES_MATERIAL, SMP_POINT_CLAMP, vec2(u, 0.75));
+     vec3 r = mat3(frame.views[draw.ids.x].inv_view) * reflect(-view_dir, n);
+-    vec3 env = textureLod(cube_textures[nonuniformEXT(uint(draw.aux1.w))], r, 5.0 * (1.0 - reflection)).rgb;
++    vec3 env = textureLod(PT_CUBE(uint(draw.aux1.w)), r, 5.0 * (1.0 - reflection)).rgb;
+     float k = param.z * (1.0 - reflection) + reflection;
+     float amount = param.z * k;
+     float keep = 1.0 - (param.z * (1.0 - specular) + specular) * amount;
+@@ -153,7 +153,7 @@ void main() {
+         vec2 ixy = vec2(it.w, it.y) * 2.0 - 1.0;
+         vec3 inner = normalize(t_geo * ixy.x + b_geo * ixy.y + n_geo * sqrt(Saturate(1.0 - dot(ixy, ixy)) + 1.00016594e-4));
+         vec3 r = mat3(frame.views[draw.ids.x].inv_view) * reflect(-view_dir, inner);
+-        vec3 cover = texture(cube_textures[nonuniformEXT(uint(draw.aux1.w))], r).rgb;
++        vec3 cover = texture(PT_CUBE(uint(draw.aux1.w)), r).rgb;
+         albedo = SrgbDecode(mix(cover, SrgbEncode(albedo), Tex(m.aux1, uv).x));
+     }
+     if ((m.flags & MAT_EYE) != 0u) {
+diff --git a/shaders/lighting.glsl b/shaders/lighting.glsl
+index cf0d56e..abc3da2 100644
+--- a/shaders/lighting.glsl
++++ b/shaders/lighting.glsl
+@@ -143,7 +143,7 @@ bool EvaluateLight(Light l, View v, Surface s, bool shadows, vec2 frag, out vec3
+         if (c.w > 0.0) {
+             vec2 uv = vec2(0.5 * c.x / c.w + 0.5, 1.0 - (0.5 * c.y / c.w + 0.5));
+             if (l.info.w > 0) {
+-                mask = textureLod(textures[nonuniformEXT(uint(l.info.w - 1))], uv, 0.0).rgb;
++                mask = textureLod(PT_TEXTURE(uint(l.info.w - 1)), uv, 0.0).rgb;
+             } else {
+                 mask = ImgLod(uint(l.info.y), SMP_LINEAR_WRAP, uv, 0.0).rgb;
+             }
+diff --git a/shaders/reflect_make_rt.frag b/shaders/reflect_make_rt.frag
+index cb66c69..878233b 100644
+--- a/shaders/reflect_make_rt.frag
++++ b/shaders/reflect_make_rt.frag
+@@ -72,26 +72,26 @@ vec4 ShadeHit(uint record, uint primitive, vec2 bary, mat4x3 to_world, vec3 hit,
+     }
+     Material m = materials[r.material];
+     if (m.kind == KIND_CONSTANT || m.kind == KIND_SKY) {
+-        vec4 t = textureLod(textures[nonuniformEXT(m.albedo)], uv, 2.0);
++        vec4 t = textureLod(PT_TEXTURE(m.albedo), uv, 2.0);
+         return vec4(min(vec3(32.0), m.albedo_factor.rgb * t.rgb * m.params.y * v.exposure.x) * Saturate(m.albedo_factor.a * t.a), 1.0);
+     }
+     if (m.kind != KIND_DEFERRED) {
+         return vec4(0.0);
+     }
+     if ((m.flags & MAT_NORMAL_MAP) != 0u) {
+-        vec4 nt = textureLod(textures[nonuniformEXT(m.normal)], uv, 2.0);
++        vec4 nt = textureLod(PT_TEXTURE(m.normal), uv, 2.0);
+         vec2 nxy = vec2(nt.w, nt.y) * 2.0 - 1.0;
+         float nz = sqrt(Saturate(1.0 - dot(nxy, nxy)) + 1.00016594e-4);
+         vec3 tangent_normal = vec3(nxy, nz);
+         if ((m.flags & MAT_SUB_NORMAL) != 0u) {
+-            vec4 mask = textureLod(textures[nonuniformEXT(m.aux2)], uv, 2.0);
+-            vec4 detail = textureLod(textures[nonuniformEXT(m.aux1)], uv * m.extra.yz, 2.0);
++            vec4 mask = textureLod(PT_TEXTURE(m.aux2), uv, 2.0);
++            vec4 detail = textureLod(PT_TEXTURE(m.aux1), uv * m.extra.yz, 2.0);
+             float k = m.extra.x * mask.x;
+             tangent_normal = normalize(vec3(nxy.x + k * (2.0 * detail.w - 1.0), nxy.y + k * (2.0 * detail.y - 1.0), nz));
+         }
+         n = RtMappedNormal(n, tangent, bitangent, tangent_normal);
+     }
+-    vec3 albedo = (m.flags & MAT_CONSTANT_COLOR) != 0u ? m.albedo_factor.rgb : textureLod(textures[nonuniformEXT(m.albedo)], uv, 2.0).rgb;
++    vec3 albedo = (m.flags & MAT_CONSTANT_COLOR) != 0u ? m.albedo_factor.rgb : textureLod(PT_TEXTURE(m.albedo), uv, 2.0).rgb;
+ 
+     vec3 ambient = vec3(0.0);
+     vec3 probe_n = vec3(-n.x, -n.z, n.y);
+@@ -145,7 +145,7 @@ vec4 ShadeHit(uint record, uint primitive, vec2 bary, mat4x3 to_world, vec3 hit,
+                 continue;
+             }
+             vec2 muv = vec2(0.5 * mc.x / mc.w + 0.5, 1.0 - (0.5 * mc.y / mc.w + 0.5));
+-            mask = l.info.w > 0 ? textureLod(textures[nonuniformEXT(uint(l.info.w - 1))], muv, 0.0).rgb : ImgLod(uint(l.info.y), SMP_LINEAR_WRAP, muv, 0.0).rgb;
++            mask = l.info.w > 0 ? textureLod(PT_TEXTURE(uint(l.info.w - 1)), muv, 0.0).rgb : ImgLod(uint(l.info.y), SMP_LINEAR_WRAP, muv, 0.0).rgb;
+         }
+         float vis = 1.0;
+         if (l.info.x >= 0 && RtOccluded(l, hit, l.position.xyz, spot, 1u | (0x10u << 8u))) {
+diff --git a/shaders/rt_shadow.glsl b/shaders/rt_shadow.glsl
+index c7e1ca9..74cd237 100644
+--- a/shaders/rt_shadow.glsl
++++ b/shaders/rt_shadow.glsl
+@@ -32,7 +32,7 @@ bool RtCasterOpaque(uint record, uint primitive, vec2 bary) {
+     uint i2 = (ib.i[base + 2u] + uint(r.vertex_offset)) * 22u + 10u;
+     vec2 uv = vec2(vb.v[i0], vb.v[i0 + 1u]) * (1.0 - bary.x - bary.y) + vec2(vb.v[i1], vb.v[i1 + 1u]) * bary.x + vec2(vb.v[i2], vb.v[i2 + 1u]) * bary.y;
+     Material m = materials[r.material];
+-    return textureLod(textures[nonuniformEXT(m.albedo)], uv, 0.0).a >= ShadowAlphaCutoff(m.flags);
++    return textureLod(PT_TEXTURE(m.albedo), uv, 0.0).a >= ShadowAlphaCutoff(m.flags);
+ }
+ 
+ bool RtOccluded(Light l, vec3 world, vec3 target, bool spot, uint info) {
+diff --git a/shaders/shadow.frag b/shaders/shadow.frag
+index c46fce3..fc5e853 100644
+--- a/shaders/shadow.frag
++++ b/shaders/shadow.frag
+@@ -12,7 +12,7 @@ layout(push_constant) uniform DrawPush {
+ void main() {
+     Material m = materials[draw.ids.y];
+     if ((m.flags & MAT_ALPHA_TEST) != 0u) {
+-        float a = texture(textures[nonuniformEXT(m.albedo)], in_uv0).a;
++        float a = texture(PT_TEXTURE(m.albedo), in_uv0).a;
+         if (a < ShadowAlphaCutoff(m.flags)) {
+             discard;
+         }
+diff --git a/shaders/ui_sprite.frag b/shaders/ui_sprite.frag
+index e609e20..db3c882 100644
+--- a/shaders/ui_sprite.frag
++++ b/shaders/ui_sprite.frag
+@@ -20,7 +20,8 @@ layout(push_constant) uniform UiPush {
+     uint draw;
+ } push;
+ 
+-layout(set = 0, binding = 0) uniform sampler2D textures[];
++#extension GL_GOOGLE_include_directive : require
++#include "texture_bindings.glsl"
+ layout(std430, set = 1, binding = 0) readonly buffer UiDraws {
+     UiDraw draws[];
+ };
+@@ -28,10 +29,10 @@ layout(set = 1, binding = 1) uniform sampler2D scene_color;
+ 
+ vec4 Sample(uint packed, vec2 uv) {
+     uint index = packed & 0x3FFFFFFFu;
+-    vec2 size = vec2(textureSize(textures[nonuniformEXT(index)], 0));
++    vec2 size = vec2(textureSize(PT_TEXTURE(index), 0));
+     float lod = log2(max(max(length(dFdx(uv) * size), length(dFdy(uv) * size)), 1e-6));
+     if ((packed & 0xC0000000u) != 0u) {
+-        vec2 half_texel = 0.5 / vec2(textureSize(textures[nonuniformEXT(index)], 0));
++        vec2 half_texel = 0.5 / vec2(textureSize(PT_TEXTURE(index), 0));
+         if ((packed & 0x80000000u) != 0u) {
+             uv.x = clamp(uv.x, half_texel.x, 1.0 - half_texel.x);
+         }
+@@ -39,7 +40,7 @@ vec4 Sample(uint packed, vec2 uv) {
+             uv.y = clamp(uv.y, half_texel.y, 1.0 - half_texel.y);
+         }
+     }
+-    return textureLod(textures[nonuniformEXT(index)], uv, lod);
++    return textureLod(PT_TEXTURE(index), uv, lod);
+ }
+ 
+ vec4 ShadeMaterial(UiDraw d) {
+diff --git a/shaders/upscale_velocity.frag b/shaders/upscale_velocity.frag
+index 76440b9..c475cb1 100644
+--- a/shaders/upscale_velocity.frag
++++ b/shaders/upscale_velocity.frag
+@@ -17,7 +17,7 @@ layout(location = 0) out vec4 out_motion;
+ void main() {
+     Material m = materials[draw.ids.y];
+     float bias = frame.views[draw.ids.x].jitter.z;
+-    float alpha = (m.flags & MAT_CONSTANT_COLOR) != 0u ? 1.0 : texture(textures[nonuniformEXT(m.albedo)], in_uv0, bias).a;
++    float alpha = (m.flags & MAT_CONSTANT_COLOR) != 0u ? 1.0 : texture(PT_TEXTURE(m.albedo), in_uv0, bias).a;
+     vec4 dither = MeshDither(gl_FragCoord.xy, frame.views[draw.ids.x].temporal);
+     if (draw.tint.a - dither.x < 0.0 || alpha - m.params.x * AlphaReference(m.flags, dither) < 0.0) {
+         discard;
+diff --git a/shaders/velocity.frag b/shaders/velocity.frag
+index 160c745..f6e2c85 100644
+--- a/shaders/velocity.frag
++++ b/shaders/velocity.frag
+@@ -16,7 +16,7 @@ layout(location = 0) out vec4 out_color;
+ 
+ void main() {
+     Material m = materials[draw.ids.y];
+-    float alpha = (m.flags & MAT_CONSTANT_COLOR) != 0u ? 1.0 : texture(textures[nonuniformEXT(m.albedo)], in_uv0).a;
++    float alpha = (m.flags & MAT_CONSTANT_COLOR) != 0u ? 1.0 : texture(PT_TEXTURE(m.albedo), in_uv0).a;
+     vec4 dither = MeshDither(gl_FragCoord.xy, frame.views[draw.ids.x].temporal);
+     if (draw.tint.a - dither.x < 0.0 || alpha - m.params.x * AlphaReference(m.flags, dither) < 0.0) {
+         discard;
+diff --git a/shaders/vfx_particle.frag b/shaders/vfx_particle.frag
+index ebcdceb..ad6e68d 100644
+--- a/shaders/vfx_particle.frag
++++ b/shaders/vfx_particle.frag
+@@ -1,8 +1,8 @@
+ #version 460
+ #extension GL_EXT_nonuniform_qualifier : require
+ 
+-layout(set = 0, binding = 0) uniform sampler2D textures[];
+-layout(set = 0, binding = 2) uniform samplerCube cube_textures[];
++#extension GL_GOOGLE_include_directive : require
++#include "texture_bindings.glsl"
+ layout(set = 1, binding = 1) uniform sampler2D depth_texture;
+ layout(set = 1, binding = 2) uniform sampler2D scene_copy;
+ layout(set = 1, binding = 3) uniform VfxFog {
+@@ -64,7 +64,7 @@ float LinearDepth(float d) {
+ }
+ 
+ vec3 ReflectionSample(uint slot, vec3 direction) {
+-    return texture(cube_textures[nonuniformEXT(slot)], direction).rgb;
++    return texture(PT_CUBE(slot), direction).rgb;
+ }
+ 
+ float FoldScreen(float u) {
+@@ -128,9 +128,9 @@ void main() {
+         base_uv = in_extra.xy + vec2(in_extra.w * centered.x - in_extra.z * centered.y,
+                                     in_extra.z * centered.x + in_extra.w * centered.y);
+     }
+-    vec4 tex = texture(textures[nonuniformEXT(in_info.x)], base_uv);
++    vec4 tex = texture(PT_TEXTURE(in_info.x), base_uv);
+     if ((flags & kAnimeBlend) != 0u) {
+-        tex = mix(tex, texture(textures[nonuniformEXT(in_info.x)], in_uv.zw), in_params.w);
++        tex = mix(tex, texture(PT_TEXTURE(in_info.x), in_uv.zw), in_params.w);
+     }
+     vec3 rgb;
+     float alpha;
+@@ -181,8 +181,8 @@ void main() {
+                                pixel.y * in_rain_rotation.y + pixel.x * in_rain_rotation.x) + in_luminance.z;
+         vec2 uv1 = scale * vec2(pixel.x * in_rain_rotation.w - pixel.y * in_rain_rotation.z,
+                                pixel.y * in_rain_rotation.w + pixel.x * in_rain_rotation.z) + in_luminance.w;
+-        float rain = in_info.z == kNoTexture ? 1.0 : texture(textures[nonuniformEXT(in_info.z)], uv0).a +
+-                                                    texture(textures[nonuniformEXT(in_info.z)], uv1).a;
++        float rain = in_info.z == kNoTexture ? 1.0 : texture(PT_TEXTURE(in_info.z), uv0).a +
++                                                    texture(PT_TEXTURE(in_info.z), uv1).a;
+         vec3 c = tex.rgb * in_color.rgb * rain * 0.5;
+         rgb = mix(pow(max((c + 0.055) / 1.055, vec3(1e-5)), vec3(2.4)), c / 12.92,
+                   lessThanEqual(c, vec3(0.03928)));
+diff --git a/src/engine/assets/enhanced_textures.cpp b/src/engine/assets/enhanced_textures.cpp
+index fd7b837..cc810e4 100644
+--- a/src/engine/assets/enhanced_textures.cpp
++++ b/src/engine/assets/enhanced_textures.cpp
+@@ -211,7 +211,7 @@ void EnhancedTextureJob::Run(std::filesystem::path game, std::filesystem::path c
+             std::ofstream manifest(cache / "manifest.txt", std::ios::trunc);
+             manifest << "cache_version=2\nmodel=" << kModel << "\nmodel_fingerprint=" << model
+                 << "\narchive_bytes=" << std::filesystem::file_size(game / "texture.qar")
+-                << "\narchive_mtime=" << std::filesystem::last_write_time(game / "texture.qar").time_since_epoch().count()
++                << "\narchive_mtime=" << std::chrono::duration_cast<std::chrono::nanoseconds>(std::filesystem::last_write_time(game / "texture.qar").time_since_epoch()).count()
+                 << "\ntextures=" << total << "\nmax_output=" << max_output << "\n";
+             if (!manifest) throw std::runtime_error("Cannot save enhanced texture manifest.");
+         }
+diff --git a/src/engine/render/renderer.cpp b/src/engine/render/renderer.cpp
+index a9c5fb3..deccdbb 100644
+--- a/src/engine/render/renderer.cpp
++++ b/src/engine/render/renderer.cpp
+@@ -64,6 +64,9 @@ bool Renderer::Init(SDL_Window* window, const RendererSettings& settings) {
+         width = ctx_.swapchain.extent.width;
+         height = ctx_.swapchain.extent.height;
+     }
++    if (render_extent_.width && render_extent_.height) {
++        width = render_extent_.width; height = render_extent_.height;
++    }
+     output_format_ = output_format;
+     for (Frame& frame : frames_) {
+         VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+@@ -336,7 +339,7 @@ bool Renderer::BeginFrame(bool present) {
+         if (!CreateTargets(render_extent_.width, render_extent_.height)) {
+             return false;
+         }
+-        LogInfo("renderer: render size {}x{} (VR)", render_extent_.width, render_extent_.height);
++        LogInfo("renderer: render size {}x{} (explicit render extent)", render_extent_.width, render_extent_.height);
+     }
+     presenting_ = window_ && present;
+     if (presenting_) {
+@@ -352,9 +355,9 @@ bool Renderer::BeginFrame(bool present) {
+             }
+             DestroyTargets();
+             if (render_extent_.width > 0 && render_extent_.height > 0) {
+-                CreateTargets(render_extent_.width, render_extent_.height);
++                if (!CreateTargets(render_extent_.width, render_extent_.height)) return false;
+             } else {
+-                CreateTargets(ctx_.swapchain.extent.width, ctx_.swapchain.extent.height);
++                if (!CreateTargets(ctx_.swapchain.extent.width, ctx_.swapchain.extent.height)) return false;
+             }
+             if (imgui_ready_) {
+                 ImGui_ImplVulkan_SetMinImageCount(ctx_.swapchain.min_image_count);
+diff --git a/src/engine/render/texture_manager.cpp b/src/engine/render/texture_manager.cpp
+index 909c79a..3de878b 100644
+--- a/src/engine/render/texture_manager.cpp
++++ b/src/engine/render/texture_manager.cpp
+@@ -11,6 +11,8 @@
+ #include "engine/assets/ftex.h"
+ #include "engine/assets/enhanced_textures.h"
+ #include "engine/core/log.h"
++#include "engine/core/crash_report.h"
++#include "engine/render/descriptor_budget.h"
+ #include "engine/fs/mods.h"
+ 
+ namespace pt {
+@@ -113,34 +115,43 @@ bool TextureManager::Init(vk::Context& ctx) {
+     base_sampler_ = CreateSampler(0);
+     sampler_ = base_sampler_;
+ 
+-    VkDescriptorSetLayoutBinding bindings[3]{};
+-    bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures,
++    texture_capacity_ = TextureDescriptorCapacity(ctx.descriptor_properties, kMaxTextures, kMaxCubeTextures, ctx.max_descriptor_set_descriptors);
++    if (texture_capacity_ < 6) { LogError("textures: device cannot fit the raster renderer's descriptor sets"); return false; }
++    if (!base_sampler_) return false;
++    LogInfo("textures: {} sampled images, {} cube images, two shared samplers", texture_capacity_, kMaxCubeTextures);
++    VkDescriptorSetLayoutBinding bindings[5]{};
++    bindings[0] = {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity_,
+                    VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                    VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+-    bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxCubeTextures, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
++    bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxCubeTextures, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
++    bindings[3] = {3, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
++    bindings[4] = {4, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+     const VkDescriptorBindingFlags bindless = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+-                                             VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+-    VkDescriptorBindingFlags binding_flags[3] = {bindless, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, bindless};
++                                             (ctx.descriptor_update_unused ? VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT : 0);
++    VkDescriptorBindingFlags binding_flags[5] = {bindless, 0, bindless, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+     VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+-    flags_info.bindingCount = 3;
++    flags_info.bindingCount = 5;
+     flags_info.pBindingFlags = binding_flags;
+     VkDescriptorSetLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+     layout_info.pNext = &flags_info;
+     layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+-    layout_info.bindingCount = 3;
++    layout_info.bindingCount = 5;
+     layout_info.pBindings = bindings;
++    VkDescriptorSetLayoutSupport layout_support{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT};
++    vkGetDescriptorSetLayoutSupport(ctx.device, &layout_info, &layout_support);
++    if (!layout_support.supported) { LogError("textures: negotiated descriptor layout rejected by device"); return false; }
+     if (!vk::Check(vkCreateDescriptorSetLayout(ctx.device, &layout_info, nullptr, &set_layout_), "texture set layout")) {
+         return false;
+     }
+-    VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures + kMaxCubeTextures},
+-                                     {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
++    VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity_ + kMaxCubeTextures},
++                                     {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_SAMPLER, 2}};
+     VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+     pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+     pool_info.maxSets = 1;
+-    pool_info.poolSizeCount = 2;
++    pool_info.poolSizeCount = 3;
+     pool_info.pPoolSizes = sizes;
+-    vkCreateDescriptorPool(ctx.device, &pool_info, nullptr, &pool_);
++    if (!vk::Check(vkCreateDescriptorPool(ctx.device, &pool_info, nullptr, &pool_), "texture descriptor pool")) return false;
+     VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+     alloc.descriptorPool = pool_;
+     alloc.descriptorSetCount = 1;
+@@ -148,7 +159,8 @@ bool TextureManager::Init(vk::Context& ctx) {
+     if (!vk::Check(vkAllocateDescriptorSets(ctx.device, &alloc, &set_), "texture set")) {
+         return false;
+     }
+-    ctx.CreateBuffer(material_buffer_, sizeof(MaterialGpu) * kMaxMaterials, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
++    if (sizeof(MaterialGpu) * kMaxMaterials > ctx.properties.limits.maxStorageBufferRange ||
++        !ctx.CreateBuffer(material_buffer_, sizeof(MaterialGpu) * kMaxMaterials, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true)) return false;
+     VkDescriptorBufferInfo buffer_info{material_buffer_.buffer, 0, VK_WHOLE_SIZE};
+     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+     write.dstSet = set_;
+@@ -157,6 +169,14 @@ bool TextureManager::Init(vk::Context& ctx) {
+     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+     write.pBufferInfo = &buffer_info;
+     vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
++    const VkDescriptorImageInfo shared_sampler{base_sampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
++    VkWriteDescriptorSet sampler_writes[2]{};
++    for (uint32_t i = 0; i < 2; ++i) {
++        auto& sw = sampler_writes[i];
++        sw = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; sw.dstSet = set_; sw.dstBinding = 3 + i;
++        sw.descriptorCount = 1; sw.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; sw.pImageInfo = &shared_sampler;
++    }
++    vkUpdateDescriptorSets(ctx.device, 2, sampler_writes, 0, nullptr);
+ 
+     const uint8_t white[4] = {255, 255, 255, 255};
+     const uint8_t flat[4] = {128, 128, 255, 255};
+@@ -238,7 +258,7 @@ int TextureManager::SetAnisotropy(int level) {
+     if (!ctx_) {
+         return 0;
+     }
+-    const int limit = static_cast<int>(ctx_->properties.limits.maxSamplerAnisotropy);
++    const int limit = ctx_->sampler_anisotropy ? static_cast<int>(ctx_->properties.limits.maxSamplerAnisotropy) : 1;
+     level = level > 1 ? std::min(level, limit) : 0;
+     if (level == anisotropy_) {
+         return anisotropy_;
+@@ -248,23 +268,11 @@ int TextureManager::SetAnisotropy(int level) {
+         return anisotropy_;
+     }
+     vkDeviceWaitIdle(ctx_->device);
+-    std::vector<VkDescriptorImageInfo> infos(images_.size());
+-    for (size_t i = 0; i < images_.size(); ++i) {
+-        uint32_t shown = static_cast<uint32_t>(i);
+-        if (enhanced_enabled_) {
+-            if (auto it = enhanced_images_.find(shown); it != enhanced_images_.end()) shown = it->second;
+-        }
+-        infos[i] = {sampler, cube_[i] ? images_[kWhite].view : images_[shown].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+-    }
+-    if (!infos.empty()) {
+-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+-        write.dstSet = set_;
+-        write.dstBinding = 0;
+-        write.descriptorCount = static_cast<uint32_t>(infos.size());
+-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+-        write.pImageInfo = infos.data();
+-        vkUpdateDescriptorSets(ctx_->device, 1, &write, 0, nullptr);
+-    }
++    const VkDescriptorImageInfo sampler_info{sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
++    VkWriteDescriptorSet sampler_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
++    sampler_write.dstSet = set_; sampler_write.dstBinding = 3; sampler_write.descriptorCount = 1;
++    sampler_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; sampler_write.pImageInfo = &sampler_info;
++    vkUpdateDescriptorSets(ctx_->device, 1, &sampler_write, 0, nullptr);
+     if (sampler_ != base_sampler_) {
+         vkDestroySampler(ctx_->device, sampler_, nullptr);
+     }
+@@ -283,21 +291,32 @@ uint32_t TextureManager::Create(const std::string& name, VkFormat format, std::s
+     if (auto it = by_name_.find(name); it != by_name_.end()) {
+         return it->second;
+     }
+-    if (mips.empty() || images_.size() >= kMaxTextures) {
+-        return kWhite;
++    if (mips.empty() || !layers || mips.size() % layers != 0 || (cube && layers != 6)) {
++        FatalError(std::format("Invalid texture mip/layer inventory: {}", name), ctx_->surface != VK_NULL_HANDLE);
++    }
++    if (images_.size() >= texture_capacity_ || (cube && cube_slots_.size() >= kMaxCubeTextures)) {
++        FatalError(std::format("Texture descriptor capacity exceeded for {} ({} 2D slots, {} cube slots); no textures were dropped", name, texture_capacity_, kMaxCubeTextures), ctx_->surface != VK_NULL_HANDLE);
++    }
++    VkFormatProperties format_properties{};
++    vkGetPhysicalDeviceFormatProperties(ctx_->physical, format, &format_properties);
++    if (!(format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
++        FatalError(std::format("GPU cannot linearly filter original texture {} (Vulkan format {}); refusing a changed sampling mode", name, static_cast<int>(format)), ctx_->surface != VK_NULL_HANDLE);
+     }
+     vk::Image image;
+     const uint32_t mip_count = static_cast<uint32_t>(mips.size()) / layers;
+     if (!ctx_->CreateImage(image, format, {mips[0].width, mips[0].height, 1}, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            mip_count, layers, VK_IMAGE_ASPECT_COLOR_BIT, cube)) {
+-        return kWhite;
++        FatalError(std::format("GPU cannot create original texture {} (Vulkan format {})", name, static_cast<int>(format)), ctx_->surface != VK_NULL_HANDLE);
+     }
+     VkDeviceSize total = 0;
+     for (const TextureMip& mip : mips) {
+         total += (mip.data.size() + 15) & ~VkDeviceSize(15);
+     }
+     vk::Buffer staging;
+-    ctx_->CreateBuffer(staging, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
++    if (!ctx_->CreateBuffer(staging, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true)) {
++        ctx_->DestroyImage(image);
++        FatalError(std::format("GPU upload allocation failed for texture {}", name), ctx_->surface != VK_NULL_HANDLE);
++    }
+     std::vector<VkBufferImageCopy> regions;
+     VkDeviceSize offset = 0;
+     for (uint32_t layer = 0; layer < layers; ++layer) {
+@@ -336,12 +355,16 @@ uint32_t TextureManager::Create(const std::string& name, VkFormat format, std::s
+     writes[0].dstBinding = 0;
+     writes[0].dstArrayElement = index;
+     writes[0].descriptorCount = 1;
+-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
++    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+     writes[0].pImageInfo = &image_info;
+     writes[1] = writes[0];
+     writes[1].dstBinding = 2;
+     writes[1].dstArrayElement = static_cast<uint32_t>(cube_slots_.size());
+     writes[1].pImageInfo = &cube_info;
++    // UPDATE_AFTER_BIND keeps recorded command buffers valid. Without UPDATE_UNUSED_WHILE_PENDING,
++    // finish prior submissions before publishing the new slot; never reduce drawing/texture content.
++    if (!ctx_->descriptor_update_unused && !vk::Check(vkDeviceWaitIdle(ctx_->device), "texture descriptor update wait"))
++        FatalError("GPU failed while synchronizing texture descriptors", ctx_->surface != VK_NULL_HANDLE);
+     vkUpdateDescriptorSets(ctx_->device, cube_slot ? 2 : 1, writes, 0, nullptr);
+     if (cube_slot) {
+         const uint32_t slot = static_cast<uint32_t>(cube_slots_.size());
+@@ -575,7 +598,7 @@ void TextureManager::UpdateTextureDescriptor(uint32_t index) {
+     VkDescriptorImageInfo info{sampler_, images_[shown].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+     write.dstSet = set_; write.dstBinding = 0; write.dstArrayElement = index;
+-    write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &info;
++    write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; write.pImageInfo = &info;
+     vkUpdateDescriptorSets(ctx_->device, 1, &write, 0, nullptr);
+ }
+ 
+@@ -590,6 +613,8 @@ void TextureManager::SetEnhancedTextures(bool enabled) {
+ }
+ 
+ uint32_t TextureManager::AddMaterial(const MaterialGpu& material) {
++    if (materials_.size() >= kMaxMaterials)
++        FatalError("Material GPU buffer capacity exceeded; no materials were dropped", ctx_->surface != VK_NULL_HANDLE);
+     materials_.push_back(material);
+     materials_dirty_ = true;
+     return static_cast<uint32_t>(materials_.size() - 1);
+diff --git a/src/engine/render/texture_manager.h b/src/engine/render/texture_manager.h
+index c462bd0..6289848 100644
+--- a/src/engine/render/texture_manager.h
++++ b/src/engine/render/texture_manager.h
+@@ -81,6 +81,7 @@ public:
+ 
+     VkDescriptorSetLayout SetLayout() const { return set_layout_; }
+     VkDescriptorSet Set() const { return set_; }
++    uint32_t TextureCapacity() const { return texture_capacity_; }
+     uint32_t TextureCount() const { return static_cast<uint32_t>(images_.size()); }
+     uint32_t CubeSlot(uint32_t texture) const;
+ 
+@@ -91,6 +92,7 @@ private:
+     uint32_t LoadModImage(const QarArchive& qar, const std::string& key, const std::string& stem, const std::vector<uint8_t>& png, bool raw);
+ 
+     vk::Context* ctx_ = nullptr;
++    uint32_t texture_capacity_ = 0;
+     VkSampler base_sampler_ = VK_NULL_HANDLE;
+     VkSampler sampler_ = VK_NULL_HANDLE;
+     int anisotropy_ = 0;
+diff --git a/src/engine/render/vk_context.cpp b/src/engine/render/vk_context.cpp
+index 8f4f041..5a75cc1 100644
+--- a/src/engine/render/vk_context.cpp
++++ b/src/engine/render/vk_context.cpp
+@@ -4,11 +4,15 @@
+ #include <SDL3/SDL_vulkan.h>
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cstring>
+ #include <string>
+ 
+ #include "engine/core/crash_report.h"
+ #include "engine/core/log.h"
++#ifdef PT_APPLE
++#include "engine/platform/apple_vulkan.h"
++#endif
+ 
+ namespace pt {
+ extern bool g_checkpoints;
+@@ -74,13 +78,21 @@ bool Context::Init(SDL_Window* window, bool validation) {
+     if (loader) {
+         /* With Streamline loaded, instance, device and swapchain must come from its proxies, so volk takes the interposer's loader instead of vulkan-1.dll. */
+         volkInitializeCustom(loader);
++#ifdef PT_APPLE
++    } else {
++        const auto apple_loader = pt::AppleVulkanGetInstanceProcAddr();
++        if (!apple_loader) { LogError("vulkan: native MoltenVK loader unavailable"); return false; }
++        volkInitializeCustom(apple_loader);
++#else
+     } else if (!Check(volkInitialize(), "volkInitialize")) {
+         return false;
++#endif
+     }
+     std::vector<const char*> extensions;
+     if (window) {
+         Uint32 count = 0;
+         const char* const* names = SDL_Vulkan_GetInstanceExtensions(&count);
++        if (!names || !count) { LogError("SDL Vulkan instance extensions: {}", SDL_GetError()); return false; }
+         extensions.assign(names, names + count);
+     }
+     std::vector<const char*> layers;
+@@ -91,12 +103,29 @@ bool Context::Init(SDL_Window* window, bool validation) {
+         validation = false;
+     }
+ 
++    uint32_t loader_version = VK_API_VERSION_1_0;
++    if (vkEnumerateInstanceVersion) vkEnumerateInstanceVersion(&loader_version);
++    if (loader_version < VK_API_VERSION_1_3) {
++        LogError("vulkan: renderer requires Vulkan 1.3, loader provides {}.{}", VK_API_VERSION_MAJOR(loader_version), VK_API_VERSION_MINOR(loader_version));
++        return false;
++    }
++    uint32_t extension_count = 0;
++    if (!Check(vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr), "instance extensions")) return false;
++    std::vector<VkExtensionProperties> instance_extensions(extension_count);
++    if (!Check(vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, instance_extensions.data()), "instance extensions")) return false;
++    const bool portability = std::any_of(instance_extensions.begin(), instance_extensions.end(), [](const auto& e) {
++        return std::strcmp(e.extensionName, "VK_KHR_portability_enumeration") == 0;
++    });
++    if (portability && std::none_of(extensions.begin(), extensions.end(), [](const char* e) { return std::strcmp(e, "VK_KHR_portability_enumeration") == 0; }))
++        extensions.push_back("VK_KHR_portability_enumeration");
++
+     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+     app.pApplicationName = "pt-port";
+     app.pEngineName = "pt-port";
+     app.apiVersion = VK_API_VERSION_1_3;
+     VkInstanceCreateInfo instance_info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+     instance_info.pApplicationInfo = &app;
++    if (portability) instance_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+     instance_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+     instance_info.ppEnabledExtensionNames = extensions.data();
+     instance_info.enabledLayerCount = static_cast<uint32_t>(layers.size());
+@@ -176,7 +205,7 @@ bool Context::Init(SDL_Window* window, bool validation) {
+             if (surface) {
+                 vkGetPhysicalDeviceSurfaceSupportKHR(candidate, i, surface, &present);
+             }
+-            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present) {
++            if ((families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) && present) {
+                 const int score = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 : 1;
+                 if (score > best_score) {
+                     best_score = score;
+@@ -194,32 +223,62 @@ bool Context::Init(SDL_Window* window, bool validation) {
+     }
+     LogInfo("vulkan: using {} (driver {:X})", properties.deviceName, properties.driverVersion);
+ 
++    VkPhysicalDeviceVulkan13Features supported13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
++    VkPhysicalDeviceVulkan12Features supported12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
++    supported12.pNext = &supported13;
++    VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
++    supported.pNext = &supported12;
++    vkGetPhysicalDeviceFeatures2(physical, &supported);
++    bool requirements_met = true;
++    const auto require = [&](VkBool32 value, const char* name) {
++        if (!value) { LogError("vulkan: renderer requires unsupported feature {}", name); requirements_met = false; }
++    };
++    require(supported13.dynamicRendering, "dynamicRendering");
++    require(supported13.synchronization2, "synchronization2");
++    require(supported13.shaderDemoteToHelperInvocation, "shaderDemoteToHelperInvocation (Vulkan 1.3 shaders)");
++    require(supported12.runtimeDescriptorArray, "runtimeDescriptorArray");
++    require(supported12.shaderSampledImageArrayNonUniformIndexing, "shaderSampledImageArrayNonUniformIndexing");
++    require(supported12.descriptorBindingPartiallyBound, "descriptorBindingPartiallyBound");
++    require(supported12.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind");
++    require(supported.features.shaderClipDistance, "shaderClipDistance (mirror and shadow clipping)");
++    require(supported.features.independentBlend, "independentBlend (multiple render targets)");
++    require(supported.features.textureCompressionBC, "textureCompressionBC (original FTEX assets; no lossy substitute)");
++    if (!requirements_met) return false;
++
+     VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+-    features13.dynamicRendering = VK_TRUE;
+-    features13.synchronization2 = VK_TRUE;
+-    features13.shaderDemoteToHelperInvocation = VK_TRUE;
++    features13.dynamicRendering = supported13.dynamicRendering;
++    features13.synchronization2 = supported13.synchronization2;
++    features13.shaderDemoteToHelperInvocation = supported13.shaderDemoteToHelperInvocation;
+     VkPhysicalDeviceVulkan12Features features12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+     features12.pNext = &features13;
+-    features12.descriptorIndexing = VK_TRUE;
+-    features12.runtimeDescriptorArray = VK_TRUE;
+-    features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+-    features12.descriptorBindingPartiallyBound = VK_TRUE;
+-    features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+-    features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+-    features12.timelineSemaphore = VK_TRUE;
+-    features12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+-    features12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+-    features12.scalarBlockLayout = VK_TRUE;
++    features12.runtimeDescriptorArray = supported12.runtimeDescriptorArray;
++    features12.shaderSampledImageArrayNonUniformIndexing = supported12.shaderSampledImageArrayNonUniformIndexing;
++    features12.descriptorBindingPartiallyBound = supported12.descriptorBindingPartiallyBound;
++    features12.descriptorBindingSampledImageUpdateAfterBind = supported12.descriptorBindingSampledImageUpdateAfterBind;
++    features12.descriptorBindingUpdateUnusedWhilePending = supported12.descriptorBindingUpdateUnusedWhilePending;
++    // The material-buffer descriptor is written once. It does not need storage-buffer update-after-bind.
++    // Variable descriptor count is also unnecessary: arrays are allocated at the negotiated fixed capacity.
++    features12.timelineSemaphore = supported12.timelineSemaphore;
++    features12.scalarBlockLayout = supported12.scalarBlockLayout;
+     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+     features.pNext = &features12;
+-    features.features.samplerAnisotropy = VK_TRUE;
+-    features.features.textureCompressionBC = VK_TRUE;
+-    features.features.fillModeNonSolid = VK_TRUE;
+-    features.features.shaderInt16 = VK_TRUE;
+-    features.features.shaderClipDistance = VK_TRUE;
+-    VkPhysicalDeviceFeatures supported{};
+-    vkGetPhysicalDeviceFeatures(physical, &supported);
+-    features.features.independentBlend = supported.independentBlend;
++    features.features.samplerAnisotropy = supported.features.samplerAnisotropy;
++    features.features.textureCompressionBC = supported.features.textureCompressionBC;
++    features.features.shaderClipDistance = supported.features.shaderClipDistance;
++    features.features.independentBlend = supported.features.independentBlend;
++    sampler_anisotropy = supported.features.samplerAnisotropy;
++    descriptor_update_unused = supported12.descriptorBindingUpdateUnusedWhilePending;
++    VkPhysicalDeviceProperties2 limits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
++    descriptor_properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
++    VkPhysicalDeviceMaintenance3Properties maintenance{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
++    descriptor_properties.pNext = &maintenance;
++    limits.pNext = &descriptor_properties;
++    vkGetPhysicalDeviceProperties2(physical, &limits);
++    max_descriptor_set_descriptors = maintenance.maxPerSetDescriptors;
++    descriptor_properties.pNext = nullptr;
++    LogInfo("vulkan: sampled-image capacity per stage {}, samplers {}, async unused descriptor updates {}",
++            descriptor_properties.maxPerStageDescriptorUpdateAfterBindSampledImages,
++            descriptor_properties.maxPerStageDescriptorUpdateAfterBindSamplers, descriptor_update_unused);
+ 
+     const float priority = 1.0f;
+     VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+@@ -250,6 +309,15 @@ bool Context::Init(SDL_Window* window, bool validation) {
+                 device_extensions.push_back(name);
+             }
+         };
++        if (has("VK_KHR_portability_subset")) add("VK_KHR_portability_subset");
++        if (surface && !swapchain_hooks && has(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) {
++            add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
++            display_timing_ = true;
++        }
++        LogInfo("vulkan: actual display timing {}", display_timing_ ? "VK_GOOGLE_display_timing" : "unavailable (submission counts are not display FPS)");
++        for (const char* name : device_extensions) {
++            if (!has(name)) { LogError("vulkan: required device extension unavailable: {}", name); return false; }
++        }
+         if (has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+             add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+             memory_budget = true;
+@@ -376,6 +444,7 @@ bool Context::CreateSwapchain(uint32_t width, uint32_t height, bool vsync) {
+     vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &format_count, nullptr);
+     std::vector<VkSurfaceFormatKHR> formats(format_count);
+     vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &format_count, formats.data());
++    if (formats.empty()) { LogError("vulkan: surface has no supported formats"); return false; }
+     VkSurfaceFormatKHR chosen = formats[0];
+     for (const auto& f : formats) {
+         if ((f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+@@ -417,9 +486,17 @@ bool Context::CreateSwapchain(uint32_t width, uint32_t height, bool vsync) {
+     info.imageExtent = extent;
+     info.imageArrayLayers = 1;
+     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++    if ((caps.supportedUsageFlags & info.imageUsage) != info.imageUsage) {
++        LogError("vulkan: surface usage {:#x} cannot support renderer usage {:#x}", caps.supportedUsageFlags, info.imageUsage);
++        return false;
++    }
+     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+     info.preTransform = caps.currentTransform;
+     info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
++    if (!(caps.supportedCompositeAlpha & info.compositeAlpha)) {
++        for (auto mode : {VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR})
++            if (caps.supportedCompositeAlpha & mode) { info.compositeAlpha = mode; break; }
++    }
+     info.presentMode = present_mode;
+     info.clipped = VK_TRUE;
+     info.oldSwapchain = swapchain.handle;
+@@ -440,6 +517,7 @@ bool Context::CreateSwapchain(uint32_t width, uint32_t height, bool vsync) {
+         DestroySwapchain();
+     }
+     swapchain.handle = handle;
++    ResetDisplayTiming();
+     swapchain.format = chosen.format;
+     swapchain.extent = extent;
+     swapchain.min_image_count = image_count;
+@@ -540,11 +618,75 @@ VkResult Context::AcquireNextImage(VkSemaphore semaphore, uint32_t* index) {
+     return vkAcquireNextImageKHR(device, swapchain.handle, UINT64_MAX, semaphore, VK_NULL_HANDLE, index);
+ }
+ 
+-VkResult Context::QueuePresent(const VkPresentInfoKHR& info) {
+-    if (swapchain_owner_) {
+-        return swapchain_owner_->QueuePresent(queue, info);
++void Context::ResetDisplayTiming() {
++    display_fps_ = -1.0;
++    display_times_.clear();
++    display_poll_ns_ = display_log_ns_ = display_arrival_ns_ = 0;
++    // Keep IDs unique within a swapchain, and ignore history from before a lifecycle reset.
++    last_present_id_ = next_present_id_ - 1;
++}
++
++void Context::PollDisplayTiming() {
++    if (!display_timing_ || !vkGetPastPresentationTimingGOOGLE || !swapchain.handle) return;
++    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count());
++    if (display_poll_ns_ && now - display_poll_ns_ < 250000000) return;
++    display_poll_ns_ = now;
++    uint32_t count = 0;
++    VkResult result = vkGetPastPresentationTimingGOOGLE(device, swapchain.handle, &count, nullptr);
++    if (result != VK_SUCCESS) { display_fps_ = -1.0; return; }
++    if (count > 256) { display_times_.clear(); count = 256; }
++    std::vector<VkPastPresentationTimingGOOGLE> past(count);
++    if (count) {
++        result = vkGetPastPresentationTimingGOOGLE(device, swapchain.handle, &count, past.data());
++        if (result != VK_SUCCESS && result != VK_INCOMPLETE) { display_fps_ = -1.0; return; }
++        past.resize(count);
++        std::sort(past.begin(), past.end(), [](const auto& a, const auto& b) { return a.presentID < b.presentID; });
++    }
++    for (const auto& item : past) {
++        if (!item.actualPresentTime || item.presentID <= last_present_id_) continue;
++        if ((last_present_id_ && item.presentID != last_present_id_ + 1) ||
++            (!display_times_.empty() && item.actualPresentTime <= display_times_.back())) display_times_.clear();
++        last_present_id_ = item.presentID;
++        if (display_times_.size() == 256) display_times_.erase(display_times_.begin());
++        display_times_.push_back(item.actualPresentTime);
++        ++displayed_frames_;
++        display_arrival_ns_ = now;
++    }
++    display_fps_ = -1.0;
++    if (display_times_.size() > 1 && now - display_arrival_ns_ < 1500000000) {
++        const uint64_t elapsed = display_times_.back() - display_times_.front();
++        if (elapsed >= 500000000) display_fps_ = (display_times_.size() - 1) * 1.0e9 / static_cast<double>(elapsed);
++    }
++    if (!display_log_ns_ || now - display_log_ns_ >= 1000000000) {
++        LogInfo("display: observed_actual_presented={} fps={:.3f} surface={}x{} source=VK_GOOGLE_display_timing (-1=unavailable)",
++                displayed_frames_, display_fps_, swapchain.extent.width, swapchain.extent.height);
++        display_log_ns_ = now;
+     }
+-    return vkQueuePresentKHR(queue, &info);
++}
++
++VkResult Context::QueuePresent(const VkPresentInfoKHR& info) {
++    if (swapchain_owner_) return swapchain_owner_->QueuePresent(queue, info);
++    VkPresentInfoKHR timed = info;
++    VkPresentTimeGOOGLE time{next_present_id_, 0};
++    VkPresentTimesInfoGOOGLE timing{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
++    bool existing_timing = false;
++    for (auto* item = static_cast<const VkBaseInStructure*>(info.pNext); item; item = item->pNext)
++        existing_timing |= item->sType == VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
++    if (display_timing_ && !existing_timing && info.swapchainCount == 1 && info.pSwapchains[0] == swapchain.handle) {
++        if (!next_present_id_) { next_present_id_ = 1; ResetDisplayTiming(); time.presentID = 1; }
++        timing.pNext = info.pNext; timing.swapchainCount = 1; timing.pTimes = &time;
++        timed.pNext = &timing;
++        ++next_present_id_;
++    } else if (display_timing_) {
++        // A foreign present-ID stream must not be interpreted as this renderer's frame sequence.
++        ResetDisplayTiming();
++        return vkQueuePresentKHR(queue, &info);
++    }
++    const VkResult result = vkQueuePresentKHR(queue, &timed);
++    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) PollDisplayTiming();
++    else ResetDisplayTiming();
++    return result;
+ }
+ 
+ bool Context::CreateImage(Image& out, VkFormat format, VkExtent3D extent, VkImageUsageFlags usage, uint32_t mip_levels,
+@@ -559,6 +701,16 @@ bool Context::CreateImage(Image& out, VkFormat format, VkExtent3D extent, VkImag
+     info.tiling = VK_IMAGE_TILING_OPTIMAL;
+     info.usage = usage;
+     info.flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
++    VkImageFormatProperties supported{};
++    const VkResult format_result = vkGetPhysicalDeviceImageFormatProperties(physical, format, info.imageType, info.tiling, usage, info.flags, &supported);
++    if (format_result != VK_SUCCESS || !(supported.sampleCounts & info.samples) ||
++        !extent.width || !extent.height || !extent.depth || !mip_levels || !layers ||
++        extent.width > supported.maxExtent.width || extent.height > supported.maxExtent.height || extent.depth > supported.maxExtent.depth ||
++        mip_levels > supported.maxMipLevels || layers > supported.maxArrayLayers) {
++        LogError("vulkan: unsupported image format {} extent {}x{}x{}, usage {:#x}, samples {}, mips {}, layers {} (query {})",
++                 static_cast<int>(format), extent.width, extent.height, extent.depth, usage, static_cast<int>(info.samples), mip_levels, layers, static_cast<int>(format_result));
++        return false;
++    }
+     VmaAllocationCreateInfo alloc{};
+     alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+     if (!Check(vmaCreateImage(allocator, &info, &alloc, &out.image, &out.allocation, nullptr), "vmaCreateImage")) {
+@@ -575,7 +727,11 @@ bool Context::CreateImage(Image& out, VkFormat format, VkExtent3D extent, VkImag
+     out.mip_levels = mip_levels;
+     out.layers = layers;
+     out.usage = usage;
+-    return Check(vkCreateImageView(device, &view_info, nullptr, &out.view), "vkCreateImageView");
++    if (!Check(vkCreateImageView(device, &view_info, nullptr, &out.view), "vkCreateImageView")) {
++        DestroyImage(out);
++        return false;
++    }
++    return true;
+ }
+ 
+ void Context::DestroyImage(Image& image) {
+diff --git a/src/engine/render/vk_context.h b/src/engine/render/vk_context.h
+index 4f9b26d..fdfb365 100644
+--- a/src/engine/render/vk_context.h
++++ b/src/engine/render/vk_context.h
+@@ -61,6 +61,12 @@ public:
+     void DestroySwapchain();
+     VkResult AcquireNextImage(VkSemaphore semaphore, uint32_t* index);
+     VkResult QueuePresent(const VkPresentInfoKHR& info);
++    // Main render/event thread only, including lifecycle resets. No Metal callback writes these fields.
++    // Actual presentation timestamps only; -1 means unavailable or still warming up.
++    void ResetDisplayTiming();
++    double DisplayFPS() const { return display_fps_; }
++    uint64_t DisplayedFrames() const { return displayed_frames_; }
++    bool DisplayTimingSupported() const { return display_timing_; }
+     const SwapchainHooks* SwapchainOwner() const { return swapchain_owner_; }
+     VkImageLayout PresentLayout() const { return swapchain_owner_ ? swapchain_owner_->PresentLayout() : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; }
+ 
+@@ -96,12 +102,24 @@ public:
+     std::string ray_query_missing;
+     VkDeviceSize scratch_alignment = 256;
+ 
++    // Negotiated requirements of the raster renderer (not guessed from GPU name).
++    VkPhysicalDeviceVulkan12Properties descriptor_properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
++    uint32_t max_descriptor_set_descriptors = 0;
++    bool sampler_anisotropy = false;
++    bool descriptor_update_unused = false;
+     bool memory_budget = false;
+     bool device_fault = false;
+     bool checkpoints = false;
+     void CheckDeviceLost(VkResult result, const char* where);
+ 
+ private:
++    void PollDisplayTiming();
++    bool display_timing_ = false;
++    double display_fps_ = -1.0;
++    uint64_t displayed_frames_ = 0;
++    uint64_t display_poll_ns_ = 0, display_log_ns_ = 0, display_arrival_ns_ = 0;
++    uint32_t next_present_id_ = 1, last_present_id_ = 0;
++    std::vector<uint64_t> display_times_;
+     VkCommandPool upload_pool_ = VK_NULL_HANDLE;
+     SwapchainHooks* swapchain_owner_ = nullptr;
+ };
+diff --git a/tests/texture_descriptor.comp b/tests/texture_descriptor.comp
+index b8ed43d..316373e 100644
+--- a/tests/texture_descriptor.comp
++++ b/tests/texture_descriptor.comp
+@@ -1,10 +1,11 @@
+ #version 460
+ #extension GL_EXT_nonuniform_qualifier : require
+ layout(local_size_x = 1) in;
+-layout(set = 0, binding = 0) uniform sampler2D textures[];
++#extension GL_GOOGLE_include_directive : require
++#include "texture_bindings.glsl"
+ layout(set = 1, binding = 0, std430) buffer Result { uvec4 size; vec4 colour; } result;
+ layout(push_constant) uniform Push { uint texture_index; } pc;
+ void main() {
+-    result.size = uvec4(textureSize(textures[nonuniformEXT(pc.texture_index)], 0), 0, 0);
+-    result.colour = textureLod(textures[nonuniformEXT(pc.texture_index)], vec2(0.5), 0);
++    result.size = uvec4(textureSize(PT_TEXTURE(pc.texture_index), 0), 0, 0);
++    result.colour = textureLod(PT_TEXTURE(pc.texture_index), vec2(0.5), 0);
+ }
+diff --git a/src/engine/render/descriptor_budget.h b/src/engine/render/descriptor_budget.h
+new file mode 100644
+index 0000000..aa74d87
+--- /dev/null
++++ b/src/engine/render/descriptor_budget.h
+@@ -0,0 +1,22 @@
++#pragma once
++#include <algorithm>
++#include <cstdint>
++#include <vulkan/vulkan.h>
++
++namespace pt {
++// Frame/post sets use 57 sampled images; reserve 128 for these and optional passes.
++// Samplers are shared descriptors, not duplicated for every texture in the array.
++inline uint32_t TextureDescriptorCapacity(const VkPhysicalDeviceVulkan12Properties& p, uint32_t wanted, uint32_t cubes, uint32_t per_set = UINT32_MAX) {
++    constexpr uint32_t reserve = 128;
++    const uint32_t images = std::min({p.maxPerStageDescriptorUpdateAfterBindSampledImages,
++                                     p.maxDescriptorSetUpdateAfterBindSampledImages,
++                                     p.maxPerStageUpdateAfterBindResources,
++                                     p.maxUpdateAfterBindDescriptorsInAllPools});
++    if (images <= reserve || cubes > images - reserve ||
++        p.maxPerStageDescriptorUpdateAfterBindSamplers < 32 || p.maxDescriptorSetUpdateAfterBindSamplers < 32) return 0;
++    // One material SSBO and two sampler descriptors. Keep one descriptor spare for
++    // MoltenVK versions whose layout-support query treats maxPerSetDescriptors as exclusive.
++    if (per_set <= 4 || cubes > per_set - 4) return 0;
++    return std::min({wanted, images - reserve - cubes, per_set - cubes - 4});
++}
++}
+diff --git a/shaders/texture_bindings.glsl b/shaders/texture_bindings.glsl
+new file mode 100644
+index 0000000..29dab12
+--- /dev/null
++++ b/shaders/texture_bindings.glsl
+@@ -0,0 +1,10 @@
++#ifndef PT_TEXTURE_BINDINGS_GLSL
++#define PT_TEXTURE_BINDINGS_GLSL
++#extension GL_EXT_nonuniform_qualifier : require
++layout(set = 0, binding = 0) uniform texture2D textures[];
++layout(set = 0, binding = 2) uniform textureCube cube_textures[];
++layout(set = 0, binding = 3) uniform sampler texture_sampler;
++layout(set = 0, binding = 4) uniform sampler cube_sampler;
++#define PT_TEXTURE(index) sampler2D(textures[nonuniformEXT(index)], texture_sampler)
++#define PT_CUBE(index) samplerCube(cube_textures[nonuniformEXT(index)], cube_sampler)
++#endif
+diff --git a/tests/descriptor_budget_test.cpp b/tests/descriptor_budget_test.cpp
+new file mode 100644
+index 0000000..c711f50
+--- /dev/null
++++ b/tests/descriptor_budget_test.cpp
+@@ -0,0 +1,25 @@
++#include "engine/render/descriptor_budget.h"
++#include <cassert>
++#include <cstdio>
++int main() {
++    VkPhysicalDeviceVulkan12Properties p{};
++    p.maxPerStageDescriptorUpdateAfterBindSampledImages = 1000000;
++    p.maxDescriptorSetUpdateAfterBindSampledImages = 1000000;
++    p.maxPerStageUpdateAfterBindResources = 1000000;
++    p.maxUpdateAfterBindDescriptorsInAllPools = 1000000;
++    p.maxPerStageDescriptorUpdateAfterBindSamplers = 1024;
++    p.maxDescriptorSetUpdateAfterBindSamplers = 1024;
++    assert(pt::TextureDescriptorCapacity(p, 8192, 64) == 8192); // 8K textures no longer need 8K samplers.
++    assert(pt::TextureDescriptorCapacity(p, 8192, 64, 1024) == 956);
++    assert(pt::TextureDescriptorCapacity(p, 8192, 64, 2) == 0);
++    p.maxPerStageDescriptorUpdateAfterBindSampledImages = 1024;
++    assert(pt::TextureDescriptorCapacity(p, 8192, 64) == 832);
++    p.maxPerStageDescriptorUpdateAfterBindSampledImages = 128;
++    assert(pt::TextureDescriptorCapacity(p, 8192, 64) == 0); // no unsigned wraparound
++    p.maxPerStageDescriptorUpdateAfterBindSampledImages = 1000000;
++    p.maxUpdateAfterBindDescriptorsInAllPools = 400;
++    assert(pt::TextureDescriptorCapacity(p, 8192, 64) == 208);
++    p.maxPerStageDescriptorUpdateAfterBindSamplers = 16;
++    assert(pt::TextureDescriptorCapacity(p, 8192, 64) == 0);
++    std::puts("descriptor budget: 7 cases passed");
++}
+diff --git a/tests/metal_capabilities_test.cpp b/tests/metal_capabilities_test.cpp
+new file mode 100644
+index 0000000..a9f79ca
+--- /dev/null
++++ b/tests/metal_capabilities_test.cpp
+@@ -0,0 +1,211 @@
++// Standalone native Vulkan driver contract probe. No game data, SDL or device installation.
++#include "engine/render/descriptor_budget.h"
++#include <cstdio>
++#include <cstring>
++#include <vector>
++#include <fstream>
++#include <cmath>
++
++bool SampleThroughSplitDescriptors(VkPhysicalDevice physical, VkDevice device, uint32_t family,
++                                   VkDescriptorSetLayout texture_layout, uint32_t capacity, const char* shader_path) {
++    std::ifstream shader_file(shader_path, std::ios::binary | std::ios::ate);
++    if (!shader_file) { std::fprintf(stderr, "missing descriptor-test SPIR-V: %s\n", shader_path); return false; }
++    const auto bytes = shader_file.tellg();
++    if (bytes <= 0 || bytes % 4) return false;
++    std::vector<uint32_t> code(static_cast<size_t>(bytes) / 4); shader_file.seekg(0); shader_file.read(reinterpret_cast<char*>(code.data()), bytes);
++    VkPhysicalDeviceMemoryProperties memory{}; vkGetPhysicalDeviceMemoryProperties(physical, &memory);
++    const auto memory_type = [&](uint32_t mask, VkMemoryPropertyFlags flags) {
++        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) if ((mask & (1u << i)) && (memory.memoryTypes[i].propertyFlags & flags) == flags) return i;
++        return UINT32_MAX;
++    };
++    // This standalone process exits on any Vulkan error; it never touches game files.
++#define REQUIRE_VK(call) do { VkResult test_rc = (call); if (test_rc != VK_SUCCESS) { std::printf(#call " failed: %d\n", test_rc); return false; } } while (0)
++    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = 64;
++    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
++    VkBuffer buffer{}; REQUIRE_VK(vkCreateBuffer(device, &bi, nullptr, &buffer));
++    VkMemoryRequirements mr{}; vkGetBufferMemoryRequirements(device, buffer, &mr);
++    VkMemoryAllocateInfo ma{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ma.allocationSize = mr.size;
++    ma.memoryTypeIndex = memory_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
++    if (ma.memoryTypeIndex == UINT32_MAX) return false;
++    VkDeviceMemory buffer_memory{}; REQUIRE_VK(vkAllocateMemory(device, &ma, nullptr, &buffer_memory));
++    REQUIRE_VK(vkBindBufferMemory(device, buffer, buffer_memory, 0));
++    void* mapped{}; REQUIRE_VK(vkMapMemory(device, buffer_memory, 0, VK_WHOLE_SIZE, 0, &mapped));
++    std::memset(mapped, 0, 64);
++    auto* pixels = static_cast<uint8_t*>(mapped) + 32;
++    for (int i = 0; i < 4; ++i) { pixels[4*i] = 255; pixels[4*i+3] = 255; }
++    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ii.imageType = VK_IMAGE_TYPE_2D; ii.format = VK_FORMAT_R8G8B8A8_UNORM;
++    ii.extent = {2, 2, 1}; ii.mipLevels = ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT; ii.tiling = VK_IMAGE_TILING_OPTIMAL;
++    ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++    VkImage image{}; REQUIRE_VK(vkCreateImage(device, &ii, nullptr, &image));
++    vkGetImageMemoryRequirements(device, image, &mr); ma.allocationSize = mr.size; ma.memoryTypeIndex = memory_type(mr.memoryTypeBits, 0);
++    VkDeviceMemory image_memory{}; REQUIRE_VK(vkAllocateMemory(device, &ma, nullptr, &image_memory));
++    REQUIRE_VK(vkBindImageMemory(device, image, image_memory, 0));
++    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO}; vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = ii.format;
++    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++    VkImageView view{}; REQUIRE_VK(vkCreateImageView(device, &vi, nullptr, &view));
++    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO}; si.magFilter = si.minFilter = VK_FILTER_NEAREST;
++    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; si.maxLod = 1;
++    VkSampler sampler{}; REQUIRE_VK(vkCreateSampler(device, &si, nullptr, &sampler));
++    VkDescriptorSetLayoutBinding result_binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
++    VkDescriptorSetLayoutCreateInfo rli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; rli.bindingCount = 1; rli.pBindings = &result_binding;
++    VkDescriptorSetLayout result_layout{}; REQUIRE_VK(vkCreateDescriptorSetLayout(device, &rli, nullptr, &result_layout));
++    VkDescriptorSetLayout layouts[] = {texture_layout, result_layout};
++    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity + 64}, {VK_DESCRIPTOR_TYPE_SAMPLER, 2}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
++    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
++    pi.maxSets = 2; pi.poolSizeCount = 3; pi.pPoolSizes = sizes;
++    VkDescriptorPool pool{}; REQUIRE_VK(vkCreateDescriptorPool(device, &pi, nullptr, &pool));
++    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; ai.descriptorPool = pool; ai.descriptorSetCount = 2; ai.pSetLayouts = layouts;
++    VkDescriptorSet sets[2]{}; REQUIRE_VK(vkAllocateDescriptorSets(device, &ai, sets));
++    // Exercise the highest legal runtime index, which catches host/shader array or capacity mismatches.
++    const uint32_t texture_index = capacity - 1;
++    VkDescriptorImageInfo image_info{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
++    VkDescriptorImageInfo sampler_info{sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
++    VkDescriptorBufferInfo result_info{buffer, 0, 32};
++    VkWriteDescriptorSet writes[3]{};
++    for (auto& write : writes) { write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; write.descriptorCount = 1; }
++    writes[0].dstSet = sets[0]; writes[0].dstBinding = 0; writes[0].dstArrayElement = texture_index; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[0].pImageInfo = &image_info;
++    writes[1].dstSet = sets[0]; writes[1].dstBinding = 3; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; writes[1].pImageInfo = &sampler_info;
++    writes[2].dstSet = sets[1]; writes[2].dstBinding = 0; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &result_info;
++    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
++    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(texture_index)};
++    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pli.setLayoutCount = 2; pli.pSetLayouts = layouts; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &push;
++    VkPipelineLayout pipeline_layout{}; REQUIRE_VK(vkCreatePipelineLayout(device, &pli, nullptr, &pipeline_layout));
++    VkShaderModuleCreateInfo sci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; sci.codeSize = code.size()*4; sci.pCode = code.data();
++    VkShaderModule shader{}; REQUIRE_VK(vkCreateShaderModule(device, &sci, nullptr, &shader));
++    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO}; cpi.layout = pipeline_layout;
++    cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpi.stage.module = shader; cpi.stage.pName = "main";
++    VkPipeline pipeline{}; REQUIRE_VK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipeline));
++    VkCommandPoolCreateInfo cp{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cp.queueFamilyIndex = family;
++    VkCommandPool commands{}; REQUIRE_VK(vkCreateCommandPool(device, &cp, nullptr, &commands));
++    VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = commands; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1;
++    VkCommandBuffer cmd{}; REQUIRE_VK(vkAllocateCommandBuffers(device, &ca, &cmd));
++    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; REQUIRE_VK(vkBeginCommandBuffer(cmd, &begin));
++    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++    barrier.image = image; barrier.subresourceRange = vi.subresourceRange; barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
++    VkBufferImageCopy copy{}; copy.bufferOffset = 32; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {2, 2, 1};
++    vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
++    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
++    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
++    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 2, sets, 0, nullptr);
++    vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(texture_index), &texture_index);
++    vkCmdDispatch(cmd, 1, 1, 1);
++    VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; host.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
++    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, nullptr, 0, nullptr);
++    REQUIRE_VK(vkEndCommandBuffer(cmd));
++    VkQueue queue{}; vkGetDeviceQueue(device, family, 0, &queue);
++    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd;
++    REQUIRE_VK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE)); REQUIRE_VK(vkQueueWaitIdle(queue));
++    auto* dimensions = static_cast<uint32_t*>(mapped); auto* color = reinterpret_cast<float*>(static_cast<uint8_t*>(mapped)+16);
++    bool pass = dimensions[0] == 2 && dimensions[1] == 2 && std::abs(color[0]-1.f) < 0.0001f && std::abs(color[1]) < 0.0001f && std::abs(color[2]) < 0.0001f && std::abs(color[3]-1.f) < 0.0001f;
++    std::printf("split_sampler_gpu_readback=%s index=%u size=%ux%u rgba=%.3f,%.3f,%.3f,%.3f\n", pass?"pass":"FAIL",texture_index,dimensions[0],dimensions[1],color[0],color[1],color[2],color[3]);
++    vkDestroyCommandPool(device, commands, nullptr); vkDestroyPipeline(device, pipeline, nullptr); vkDestroyShaderModule(device, shader, nullptr);
++    vkDestroyPipelineLayout(device, pipeline_layout, nullptr); vkDestroyDescriptorPool(device, pool, nullptr); vkDestroyDescriptorSetLayout(device, result_layout, nullptr);
++    vkDestroySampler(device, sampler, nullptr); vkDestroyImageView(device, view, nullptr); vkDestroyImage(device, image, nullptr); vkFreeMemory(device, image_memory, nullptr);
++    vkUnmapMemory(device, buffer_memory); vkDestroyBuffer(device, buffer, nullptr); vkFreeMemory(device, buffer_memory, nullptr);
++    return pass;
++#undef REQUIRE_VK
++}
++
++int main(int argc, char** argv) {
++    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
++    app.pApplicationName = "pt-native-renderer-capabilities"; app.apiVersion = VK_API_VERSION_1_3;
++    const char* instance_extensions[] = {"VK_KHR_portability_enumeration"};
++    VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
++    ci.pApplicationInfo = &app; ci.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
++    uint32_t instance_extension_count = 0;
++    vkEnumerateInstanceExtensionProperties(nullptr, &instance_extension_count, nullptr);
++    std::vector<VkExtensionProperties> instance_available(instance_extension_count);
++    vkEnumerateInstanceExtensionProperties(nullptr, &instance_extension_count, instance_available.data());
++    bool has_portability = false;
++    for (const auto& e : instance_available) has_portability |= std::strcmp(e.extensionName, instance_extensions[0]) == 0;
++    ci.flags = has_portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0;
++    ci.enabledExtensionCount = has_portability ? 1 : 0; ci.ppEnabledExtensionNames = instance_extensions;
++    VkInstance instance{};
++    VkResult rc = vkCreateInstance(&ci, nullptr, &instance);
++    if (rc != VK_SUCCESS) { std::printf("instance_error=%d\n", rc); return 1; }
++    uint32_t count = 0; vkEnumeratePhysicalDevices(instance, &count, nullptr);
++    std::vector<VkPhysicalDevice> physical(count); vkEnumeratePhysicalDevices(instance, &count, physical.data());
++    if (physical.empty()) return 2;
++    VkPhysicalDeviceVulkan12Properties p12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
++    VkPhysicalDeviceMaintenance3Properties maintenance{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES}; p12.pNext = &maintenance;
++    VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2}; p.pNext = &p12;
++    vkGetPhysicalDeviceProperties2(physical[0], &p);
++    VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
++    VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES}; f12.pNext = &f13;
++    VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; f.pNext = &f12;
++    vkGetPhysicalDeviceFeatures2(physical[0], &f);
++    std::printf("device=%s api=%u.%u.%u\n", p.properties.deviceName, VK_API_VERSION_MAJOR(p.properties.apiVersion), VK_API_VERSION_MINOR(p.properties.apiVersion), VK_API_VERSION_PATCH(p.properties.apiVersion));
++#define SHOW(owner, name) std::printf(#name "=%u\n", owner.name)
++    SHOW(f13, dynamicRendering); SHOW(f13, synchronization2); SHOW(f13, shaderDemoteToHelperInvocation);
++    SHOW(f12, runtimeDescriptorArray); SHOW(f12, shaderSampledImageArrayNonUniformIndexing);
++    SHOW(f12, descriptorBindingPartiallyBound); SHOW(f12, descriptorBindingSampledImageUpdateAfterBind);
++    SHOW(f12, descriptorBindingUpdateUnusedWhilePending); SHOW(f12, descriptorBindingStorageBufferUpdateAfterBind);
++    SHOW(f.features, textureCompressionBC); SHOW(f.features, shaderClipDistance); SHOW(f.features, independentBlend);
++    SHOW(p12, maxPerStageDescriptorUpdateAfterBindSamplers); SHOW(p12, maxPerStageDescriptorUpdateAfterBindSampledImages);
++    SHOW(maintenance, maxPerSetDescriptors);
++    const uint32_t capacity = pt::TextureDescriptorCapacity(p12, 8192, 64, maintenance.maxPerSetDescriptors);
++    std::printf("texture_capacity=%u cube_capacity=64 shared_samplers=2\n", capacity);
++    bool valid = f13.dynamicRendering && f13.synchronization2 && f13.shaderDemoteToHelperInvocation &&
++        f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
++        f12.descriptorBindingSampledImageUpdateAfterBind && f.features.textureCompressionBC && f.features.shaderClipDistance &&
++        f.features.independentBlend && capacity >= 6;
++    for (VkFormat format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
++                           VK_FORMAT_BC3_UNORM_BLOCK, VK_FORMAT_BC5_UNORM_BLOCK, VK_FORMAT_BC7_UNORM_BLOCK}) {
++        VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT;
++        usage |= format == VK_FORMAT_D32_SFLOAT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT :
++                 format == VK_FORMAT_R16G16B16A16_SFLOAT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++        VkImageFormatProperties image{};
++        rc = vkGetPhysicalDeviceImageFormatProperties(physical[0], format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, usage, 0, &image);
++        VkFormatProperties format_properties{}; vkGetPhysicalDeviceFormatProperties(physical[0], format, &format_properties);
++        const bool linear = format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
++        std::printf("format=%d result=%d samples=%u linear_filter=%d\n", format, rc, image.sampleCounts, linear);
++        valid &= rc == VK_SUCCESS && (image.sampleCounts & VK_SAMPLE_COUNT_1_BIT);
++        if (format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && format <= VK_FORMAT_BC7_SRGB_BLOCK) valid &= linear;
++    }
++    uint32_t family_count = 0; vkGetPhysicalDeviceQueueFamilyProperties(physical[0], &family_count, nullptr);
++    std::vector<VkQueueFamilyProperties> families(family_count); vkGetPhysicalDeviceQueueFamilyProperties(physical[0], &family_count, families.data());
++    uint32_t family = 0;
++    while (family < family_count && (families[family].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ++family;
++    if (!valid || family == family_count) { vkDestroyInstance(instance, nullptr); return 3; }
++    // Enable only features needed for the descriptor layout being tested.
++    VkPhysicalDeviceVulkan12Features enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
++    enabled.runtimeDescriptorArray = f12.runtimeDescriptorArray;
++    enabled.shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing;
++    enabled.descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound;
++    enabled.descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind;
++    const float priority = 1;
++    VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueFamilyIndex = family; qi.queueCount = 1; qi.pQueuePriorities = &priority;
++    VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.pNext = &enabled; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;
++    uint32_t extension_count = 0; vkEnumerateDeviceExtensionProperties(physical[0], nullptr, &extension_count, nullptr);
++    std::vector<VkExtensionProperties> extensions(extension_count); vkEnumerateDeviceExtensionProperties(physical[0], nullptr, &extension_count, extensions.data());
++    const char* portability = "VK_KHR_portability_subset";
++    for (const auto& extension : extensions) if (std::strcmp(extension.extensionName, portability) == 0) { di.enabledExtensionCount = 1; di.ppEnabledExtensionNames = &portability; }
++    VkDevice device{}; rc = vkCreateDevice(physical[0], &di, nullptr, &device);
++    std::printf("device_create=%d\n", rc);
++    if (rc != VK_SUCCESS) { vkDestroyInstance(instance, nullptr); return 4; }
++    VkDescriptorSetLayoutBinding bindings[] = {
++        {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
++        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
++        {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
++        {3, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
++        {4, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
++    const VkDescriptorBindingFlags image = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
++    VkDescriptorBindingFlags flags[] = {image, 0, image, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
++    VkDescriptorSetLayoutBindingFlagsCreateInfo fi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO}; fi.bindingCount = 5; fi.pBindingFlags = flags;
++    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; li.pNext = &fi;
++    li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT; li.bindingCount = 5; li.pBindings = bindings;
++    VkDescriptorSetLayoutSupport support{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT}; vkGetDescriptorSetLayoutSupport(device, &li, &support);
++    VkDescriptorSetLayout layout{}; rc = vkCreateDescriptorSetLayout(device, &li, nullptr, &layout);
++    std::printf("split_sampler_layout_supported=%u create=%d\n", support.supported, rc);
++    bool gpu_pass = true;
++    if (argc > 1 && support.supported && rc == VK_SUCCESS) gpu_pass = SampleThroughSplitDescriptors(physical[0], device, family, layout, capacity, argv[1]);
++    else std::puts("split_sampler_gpu_readback=not_requested");
++    if (layout) vkDestroyDescriptorSetLayout(device, layout, nullptr);
++    vkDestroyDevice(device, nullptr); vkDestroyInstance(instance, nullptr);
++    std::puts("scope=host_capabilities_descriptor_layout_and_optional_compute_readback; rendered_gameplay=false");
++    return support.supported && rc == VK_SUCCESS && gpu_pass ? 0 : 5;
++}

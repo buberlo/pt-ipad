@@ -1,0 +1,685 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9efb112..991ea3f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -17,6 +17,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   string(APPEND CMAKE_SHARED_LINKER_FLAGS " -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL -Wl,-Bsymbolic")
+   string(APPEND CMAKE_MODULE_LINKER_FLAGS " -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL -Wl,-Bsymbolic")
+ endif()
++include(cmake/Apple.cmake)
+ include(cmake/Dependencies.cmake)
+ 
+ file(GLOB_RECURSE PT_ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.cpp src/engine/*.h)
+@@ -50,7 +51,7 @@ add_library(pt_engine STATIC ${PT_ENGINE_SOURCES} ${PT_GAME_SOURCES})
+ if(DEFINED ENV{PT_GAMEPLUS})
+   set(PT_GAMEPLUS_DEFAULT "$ENV{PT_GAMEPLUS}")
+ else()
+-  set(PT_GAMEPLUS_DEFAULT ON)
++  set(PT_GAMEPLUS_DEFAULT ${PT_DESKTOP_EXTRAS_DEFAULT})
+ endif()
+ option(PT_GAMEPLUS "Game+ content after a finished game" ${PT_GAMEPLUS_DEFAULT})
+ if(PT_GAMEPLUS)
+@@ -63,6 +64,11 @@ add_dependencies(pt_engine pt_version)
+ target_include_directories(pt_engine PUBLIC src)
+ target_compile_definitions(pt_engine PUBLIC VK_NO_PROTOTYPES NOMINMAX WIN32_LEAN_AND_MEAN GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_RADIANS)
+ target_link_libraries(pt_engine PUBLIC pt_thirdparty SDL3::SDL3-static)
++if(APPLE)
++  target_sources(pt_engine PRIVATE src/engine/platform/apple_host.m)
++  target_link_libraries(pt_engine PUBLIC PT_MoltenVK whisper)
++  target_compile_definitions(pt_engine PUBLIC PT_APPLE=1 PT_IOS=$<BOOL:${PT_IOS}> PT_STATIC_WHISPER=1 PT_NETWORK_UPDATES=$<BOOL:${PT_NETWORK_UPDATES}>)
++endif()
+ if(WIN32)
+   # dbghelp: the crash report (src/engine/core/crash_report.cpp) writes minidumps from pt_engine, so every test links it
+   target_link_libraries(pt_engine PUBLIC gdi32 usp10 winhttp dbghelp ws2_32)
+@@ -74,7 +80,7 @@ if(MSVC)
+   target_compile_options(pt_engine PRIVATE /W3 /utf-8 /EHsc)
+ endif()
+ 
+-add_executable(pt WIN32 src/main.cpp)
++add_executable(pt WIN32 ${PT_BUNDLE_KEYWORD} src/main.cpp)
+ target_link_libraries(pt PRIVATE pt_engine)
+ if(WIN32)
+   target_link_libraries(pt PRIVATE dbghelp ole32 uuid)
+@@ -88,7 +94,7 @@ add_dependencies(pt pt_build_id)
+ # the release 1.0 game: the loop browser stays locked until the game was finished once, its entries open as their loops are reached
+ # (PT_RELEASE_LOCKS, docs/gameplay.md loop browser); pt (developer) keeps every entry open. tools/ci/release.py
+ # builds it and tools/package.py --exe ships it as pt.exe
+-add_executable(pt_release WIN32 EXCLUDE_FROM_ALL src/main.cpp)
++add_executable(pt_release WIN32 ${PT_BUNDLE_KEYWORD} EXCLUDE_FROM_ALL src/main.cpp)
+ target_compile_definitions(pt_release PRIVATE PT_RELEASE_LOCKS=1)
+ target_include_directories(pt_release PRIVATE "${CMAKE_BINARY_DIR}/generated")
+ add_dependencies(pt_release pt_build_id)
+@@ -131,7 +137,7 @@ if(WIN32 AND EXISTS "${PT_SETUP_PAYLOAD}")
+     target_link_options(pt_setup PRIVATE /OPT:REF /OPT:ICF)
+   endif()
+ endif()
+-if(NOT WIN32)
++if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   # the Linux installer (installer/Native/setup_linux.cpp); tools/linux/attach_payload.py appends the payload after the build
+   add_executable(pt_setup_linux EXCLUDE_FROM_ALL installer/Native/setup_linux.cpp src/engine/platform/http.cpp
+     src/engine/platform/update_check.cpp src/engine/platform/os.cpp)
+@@ -145,7 +151,10 @@ if(MSVC)
+ endif()
+ 
+ include(cmake/Upscalers.cmake)
+-include(cmake/EnhancedTextures.cmake)
++option(PT_ENHANCED_TEXTURES "Fetch and package the desktop external texture enhancer" ${PT_DESKTOP_EXTRAS_DEFAULT})
++if(PT_ENHANCED_TEXTURES)
++  include(cmake/EnhancedTextures.cmake)
++endif()
+ include(cmake/OpenXR.cmake)
+ list(APPEND PT_UPSCALER_RUNTIME_FILES ${PT_OPENXR_RUNTIME_FILES})
+ list(APPEND PT_UPSCALER_NOTICES ${PT_OPENXR_NOTICES})
+@@ -168,19 +177,23 @@ foreach(shader ${PT_SHADERS})
+   set(out ${PT_SPIRV_DIR}/${name}.spv)
+   add_custom_command(OUTPUT ${out}
+     COMMAND ${CMAKE_COMMAND} -E make_directory ${PT_SPIRV_DIR}
+-    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 -O -MD -MF ${out}.d ${shader} -o ${out}
++    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=${PT_SHADER_TARGET_ENV} -O -MD -MF ${out}.d ${shader} -o ${out}
+     DEPENDS ${shader} DEPFILE ${out}.d VERBATIM)
+   list(APPEND PT_SPIRV_OUTPUTS ${out})
+ endforeach()
+ add_custom_target(pt_shaders ALL DEPENDS ${PT_SPIRV_OUTPUTS})
+ add_dependencies(pt pt_shaders)
+-target_compile_definitions(pt_engine PUBLIC PT_SHADER_DIR="${PT_SPIRV_DIR}" PT_VOICE_MODEL_DIR="${CMAKE_BINARY_DIR}/voice")
++target_compile_definitions(pt_engine PUBLIC PT_SHADER_DIR="${PT_SPIRV_DIR}" PT_VOICE_MODEL_DIR="${PT_VOICE_DIR}")
+ target_include_directories(pt_engine PRIVATE ${PT_WHISPER_INCLUDE_DIRS})
+ # whisper.cpp, ggml and its CPU variants in voice/ for every game target (tools/package.py ships them with any of these)
+ foreach(game pt pt_release)
+   add_dependencies(${game} pt_voice_runtime)
+ endforeach()
+ 
++if(APPLE)
++  include(cmake/AppleBundle.cmake)
++endif()
++
+ add_executable(pt_tests tests/test_strcode.cpp)
+ target_link_libraries(pt_tests PRIVATE pt_engine)
+ 
+@@ -207,8 +220,8 @@ target_link_libraries(pt_texture_job_test PRIVATE pt_engine)
+ set(PT_TEXTURE_DESCRIPTOR_SHADER "${CMAKE_BINARY_DIR}/tests/texture_descriptor.comp.spv")
+ add_custom_command(OUTPUT "${PT_TEXTURE_DESCRIPTOR_SHADER}"
+   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/tests"
+-  COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 -O "${CMAKE_SOURCE_DIR}/tests/texture_descriptor.comp" -o "${PT_TEXTURE_DESCRIPTOR_SHADER}"
+-  DEPENDS tests/texture_descriptor.comp VERBATIM)
++  COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=${PT_SHADER_TARGET_ENV} -O -I "${CMAKE_SOURCE_DIR}/shaders" "${CMAKE_SOURCE_DIR}/tests/texture_descriptor.comp" -o "${PT_TEXTURE_DESCRIPTOR_SHADER}"
++  DEPENDS tests/texture_descriptor.comp shaders/texture_bindings.glsl VERBATIM)
+ add_custom_target(pt_texture_descriptor_shader DEPENDS "${PT_TEXTURE_DESCRIPTOR_SHADER}")
+ add_executable(pt_texture_descriptor_test tests/texture_descriptor_test.cpp)
+ target_link_libraries(pt_texture_descriptor_test PRIVATE pt_engine)
+@@ -218,7 +231,7 @@ add_dependencies(pt_texture_descriptor_test pt_texture_descriptor_shader)
+ set(PT_REFLECTION_MIX_SHADER "${CMAKE_BINARY_DIR}/tests/reflection_mix_test.comp.spv")
+ add_custom_command(OUTPUT "${PT_REFLECTION_MIX_SHADER}"
+   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/tests"
+-  COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 -O -I "${CMAKE_SOURCE_DIR}/shaders" "${CMAKE_SOURCE_DIR}/tests/reflection_mix_test.comp" -o "${PT_REFLECTION_MIX_SHADER}"
++  COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=${PT_SHADER_TARGET_ENV} -O -I "${CMAKE_SOURCE_DIR}/shaders" "${CMAKE_SOURCE_DIR}/tests/reflection_mix_test.comp" -o "${PT_REFLECTION_MIX_SHADER}"
+   DEPENDS tests/reflection_mix_test.comp shaders/reflection_mix.glsl shaders/mirror_temporal.glsl shaders/flashlight_reactivity.glsl VERBATIM)
+ add_custom_target(pt_reflection_mix_shader DEPENDS "${PT_REFLECTION_MIX_SHADER}")
+ add_executable(pt_reflection_mix_test tests/reflection_mix_test.cpp)
+@@ -287,7 +300,7 @@ if(MSVC)
+ endif()
+ 
+ target_compile_definitions(pt_engine PUBLIC PT_FONT_DIR="${CMAKE_SOURCE_DIR}/assets/fonts")
+-add_custom_command(TARGET pt POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:pt>/fonts")
++add_custom_command(TARGET pt POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "${PT_RESOURCE_OUTPUT_DIR}/fonts")
+ # the bundled fonts' SIL OFL notices also go to licenses/, beside the SDK notices
+ file(GLOB PT_FONT_LICENSES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/fonts/OFL-*.txt")
+ foreach(license ${PT_FONT_LICENSES})
+@@ -310,3 +323,33 @@ target_link_libraries(pt_platform_test PRIVATE pt_engine)
+ add_executable(pt_mods_test tests/mods_test.cpp)
+ target_link_libraries(pt_mods_test PRIVATE pt_engine)
+ 
++add_executable(pt_ipad_input_test tests/ipad_input_test.cpp)
++target_link_libraries(pt_ipad_input_test PRIVATE pt_engine)
++
++# Apple graphics capability and descriptor policy checks use no game assets.
++add_executable(pt_descriptor_budget_test tests/descriptor_budget_test.cpp)
++target_include_directories(pt_descriptor_budget_test PRIVATE src)
++target_link_libraries(pt_descriptor_budget_test PRIVATE Vulkan::Headers)
++if(MSVC)
++  target_compile_options(pt_descriptor_budget_test PRIVATE /UNDEBUG)
++else()
++  target_compile_options(pt_descriptor_budget_test PRIVATE -UNDEBUG)
++endif()
++if(APPLE)
++  add_executable(pt_metal_capabilities_test tests/metal_capabilities_test.cpp)
++  target_include_directories(pt_metal_capabilities_test PRIVATE src)
++  target_link_libraries(pt_metal_capabilities_test PRIVATE PT_MoltenVK Vulkan::Headers)
++endif()
++
++# These host tests use synthetic fixtures only and keep them below the build tree.
++if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
++  enable_testing()
++  foreach(test pt_tests pt_voice_match_test pt_graphics_preset_test pt_blur_sway_test pt_descriptor_budget_test pt_ipad_input_test)
++    add_test(NAME ${test} COMMAND ${test})
++    set_tests_properties(${test} PROPERTIES LABELS "asset-free")
++  endforeach()
++  foreach(test pt_settings_roundtrip_test pt_save_status_test pt_save_reset_test pt_mods_test)
++    add_test(NAME ${test} COMMAND ${test} "${CMAKE_BINARY_DIR}/test-fixtures/${test}")
++    set_tests_properties(${test} PROPERTIES LABELS "asset-free")
++  endforeach()
++endif()
+diff --git a/cmake/Apple.cmake b/cmake/Apple.cmake
+new file mode 100644
+index 0000000..854e2c1
+--- /dev/null
++++ b/cmake/Apple.cmake
+@@ -0,0 +1,67 @@
++# Host shader tools are executable on the build Mac; Vulkan headers and MoltenVK
++# belong to the target. Never resolve host programs through an iOS sysroot.
++set(PT_DESKTOP_EXTRAS_DEFAULT ON)
++set(PT_SHADER_TARGET_ENV "vulkan1.3" CACHE STRING "SPIR-V target environment")
++set(PT_RESOURCE_OUTPUT_DIR "$<TARGET_FILE_DIR:pt>")
++if(NOT APPLE)
++  return()
++endif()
++enable_language(OBJC)
++set(PT_DESKTOP_EXTRAS_DEFAULT OFF)
++set(PT_BUNDLE_KEYWORD MACOSX_BUNDLE)
++set(PT_IOS OFF)
++set(PT_IOS_PLIST_VALUE false)
++if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++  set(PT_IOS ON)
++  set(PT_IOS_PLIST_VALUE true)
++endif()
++option(PT_NETWORK_UPDATES "Check upstream releases over the network" OFF)
++set(PT_BUNDLE_IDENTIFIER "com.konradkern.pt.native" CACHE STRING "Apple application bundle identifier")
++set(PT_DEVELOPMENT_TEAM "" CACHE STRING "Optional local Apple development team")
++set(PT_MOLTENVK_LIBRARY "" CACHE FILEPATH "Target MoltenVK static archive")
++set(PT_MOLTENVK_INCLUDE_DIR "" CACHE PATH "Target Vulkan headers directory")
++set(PT_MOLTENVK_LICENSE "" CACHE FILEPATH "License from the target MoltenVK source or package")
++set(PT_HOST_GLSLC "" CACHE FILEPATH "Host glslc shader compiler")
++if(NOT PT_HOST_GLSLC)
++  find_program(PT_GLSLC_FOUND glslc HINTS /opt/homebrew/bin /usr/local/bin NO_CMAKE_FIND_ROOT_PATH REQUIRED)
++  set(PT_HOST_GLSLC "${PT_GLSLC_FOUND}" CACHE FILEPATH "Host glslc shader compiler" FORCE)
++endif()
++set(Vulkan_GLSLC_EXECUTABLE "${PT_HOST_GLSLC}")
++if(NOT PT_MOLTENVK_INCLUDE_DIR)
++  find_path(PT_VULKAN_HEADERS_FOUND vulkan/vulkan.h HINTS /opt/homebrew/include /usr/local/include NO_CMAKE_FIND_ROOT_PATH REQUIRED)
++  set(PT_MOLTENVK_INCLUDE_DIR "${PT_VULKAN_HEADERS_FOUND}" CACHE PATH "Target Vulkan headers directory" FORCE)
++endif()
++if(NOT PT_MOLTENVK_LIBRARY AND NOT PT_IOS)
++  find_library(PT_MOLTENVK_FOUND NAMES libMoltenVK.a HINTS /opt/homebrew/lib /usr/local/lib NO_CMAKE_FIND_ROOT_PATH REQUIRED)
++  set(PT_MOLTENVK_LIBRARY "${PT_MOLTENVK_FOUND}" CACHE FILEPATH "Target MoltenVK static archive" FORCE)
++endif()
++if(NOT EXISTS "${PT_MOLTENVK_LIBRARY}")
++  message(FATAL_ERROR "Set PT_MOLTENVK_LIBRARY to the MoltenVK archive built for this Apple target")
++endif()
++if(NOT TARGET Vulkan::Headers)
++  add_library(Vulkan::Headers INTERFACE IMPORTED)
++  set_target_properties(Vulkan::Headers PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${PT_MOLTENVK_INCLUDE_DIR}")
++endif()
++file(SHA256 "${PT_MOLTENVK_LIBRARY}" PT_MOLTENVK_SHA256)
++file(WRITE "${CMAKE_BINARY_DIR}/apple-build-inputs.txt"
++  "system=${CMAKE_SYSTEM_NAME}\narchitecture=${CMAKE_OSX_ARCHITECTURES}\nsdk=${CMAKE_OSX_SYSROOT}\nminimum_os=${CMAKE_OSX_DEPLOYMENT_TARGET}\nmoltenvk_library=${PT_MOLTENVK_LIBRARY}\nmoltenvk_sha256=${PT_MOLTENVK_SHA256}\nvulkan_headers=${PT_MOLTENVK_INCLUDE_DIR}\nhost_glslc=${PT_HOST_GLSLC}\n")
++if(NOT PT_MOLTENVK_LICENSE AND NOT PT_IOS)
++  find_file(PT_MOLTENVK_LICENSE_FOUND LICENSE HINTS /opt/homebrew/opt/molten-vk /usr/local/opt/molten-vk NO_CMAKE_FIND_ROOT_PATH)
++  if(PT_MOLTENVK_LICENSE_FOUND)
++    set(PT_MOLTENVK_LICENSE "${PT_MOLTENVK_LICENSE_FOUND}" CACHE FILEPATH "License from target MoltenVK" FORCE)
++  endif()
++endif()
++add_library(PT_MoltenVK STATIC IMPORTED GLOBAL)
++set_target_properties(PT_MoltenVK PROPERTIES IMPORTED_LOCATION "${PT_MOLTENVK_LIBRARY}")
++set_property(TARGET PT_MoltenVK PROPERTY INTERFACE_LINK_LIBRARIES
++  "-framework Metal;-framework QuartzCore;-framework Foundation;-framework IOSurface;-framework IOKit;-framework CoreGraphics")
++if(PT_IOS)
++  set_property(TARGET PT_MoltenVK APPEND PROPERTY INTERFACE_LINK_LIBRARIES "-framework UIKit")
++else()
++  set_property(TARGET PT_MoltenVK APPEND PROPERTY INTERFACE_LINK_LIBRARIES "-framework AppKit")
++endif()
++if(PT_IOS)
++  set(PT_RESOURCE_OUTPUT_DIR "$<TARGET_BUNDLE_DIR:pt>")
++else()
++  set(PT_RESOURCE_OUTPUT_DIR "$<TARGET_BUNDLE_CONTENT_DIR:pt>/Resources")
++endif()
+diff --git a/cmake/AppleBundle.cmake b/cmake/AppleBundle.cmake
+new file mode 100644
+index 0000000..44e8afc
+--- /dev/null
++++ b/cmake/AppleBundle.cmake
+@@ -0,0 +1,65 @@
++foreach(game pt pt_release)
++  set_target_properties(${game} PROPERTIES MACOSX_BUNDLE TRUE
++    MACOSX_BUNDLE_GUI_IDENTIFIER "${PT_BUNDLE_IDENTIFIER}"
++    MACOSX_BUNDLE_BUNDLE_NAME "P.T. Native"
++    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PT_VERSION}"
++    MACOSX_BUNDLE_BUNDLE_VERSION "1"
++    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
++    XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic
++    XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${PT_DEVELOPMENT_TEAM}"
++    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "2")
++  if(PT_IOS)
++    set(resources "$<TARGET_BUNDLE_DIR:${game}>")
++  else()
++    set(resources "$<TARGET_BUNDLE_CONTENT_DIR:${game}>/Resources")
++  endif()
++  add_dependencies(${game} pt_shaders)
++  add_custom_command(TARGET ${game} POST_BUILD
++    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PT_SPIRV_DIR}" "${resources}/shaders"
++    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PT_VOICE_DIR}" "${resources}/voice"
++    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "${resources}/fonts"
++    COMMAND ${CMAKE_COMMAND} -E make_directory "${resources}/licenses"
++    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/LICENSE" "${resources}/licenses/pt-pc-MIT.txt"
++    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PT_WWISE_CODEBOOKS_LICENSE}" "${resources}/licenses/ww2ogg-COPYING"
++    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/apple-build-inputs.txt" "${resources}/apple-build-inputs.txt"
++    VERBATIM)
++  foreach(dep sdl3 zlib whisper volk vma glm imgui stb lua51 bc7enc harfbuzz ogg vorbis)
++    file(GLOB notices "${${dep}_SOURCE_DIR}/LICENSE*" "${${dep}_SOURCE_DIR}/COPYING*" "${${dep}_SOURCE_DIR}/COPYRIGHT*")
++    foreach(notice IN LISTS notices)
++      if(NOT IS_DIRECTORY "${notice}")
++        get_filename_component(notice_name "${notice}" NAME)
++        add_custom_command(TARGET ${game} POST_BUILD
++          COMMAND ${CMAKE_COMMAND} -E copy_if_different "${notice}" "${resources}/licenses/${dep}-${notice_name}" VERBATIM)
++      endif()
++    endforeach()
++  endforeach()
++  if(EXISTS "${whisper_SOURCE_DIR}/ggml/LICENSE")
++    add_custom_command(TARGET ${game} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
++      "${whisper_SOURCE_DIR}/ggml/LICENSE" "${resources}/licenses/ggml-LICENSE" VERBATIM)
++  endif()
++  if(EXISTS "${PT_MOLTENVK_LICENSE}")
++    add_custom_command(TARGET ${game} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
++      "${PT_MOLTENVK_LICENSE}" "${resources}/licenses/MoltenVK-LICENSE" VERBATIM)
++    get_filename_component(molten_source "${PT_MOLTENVK_LICENSE}" DIRECTORY)
++    foreach(component SPIRV-Cross SPIRV-Tools cereal Vulkan-Headers Volk)
++      file(GLOB molten_notices "${molten_source}/External/${component}/LICENSE*"
++           "${molten_source}/External/${component}/COPYING*"
++           "${molten_source}/External/${component}/COPYRIGHT*")
++      foreach(notice IN LISTS molten_notices)
++        if(NOT IS_DIRECTORY "${notice}")
++          get_filename_component(notice_name "${notice}" NAME)
++          add_custom_command(TARGET ${game} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
++            "${notice}" "${resources}/licenses/MoltenVK-${component}-${notice_name}" VERBATIM)
++        endif()
++      endforeach()
++    endforeach()
++    foreach(notice "cereal/include/cereal/external/LICENSE" "cereal/include/cereal/external/rapidjson/LICENSE"
++                   "cereal/include/cereal/external/rapidjson/msinttypes/LICENSE" "SPIRV-Tools/external/spirv-headers/LICENSE")
++      if(EXISTS "${molten_source}/External/${notice}")
++        string(REPLACE "/" "-" notice_name "${notice}")
++        add_custom_command(TARGET ${game} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
++          "${molten_source}/External/${notice}" "${resources}/licenses/MoltenVK-${notice_name}" VERBATIM)
++      endif()
++    endforeach()
++  endif()
++endforeach()
+diff --git a/cmake/Dependencies.cmake b/cmake/Dependencies.cmake
+index 8591a8d..7261e86 100644
+--- a/cmake/Dependencies.cmake
++++ b/cmake/Dependencies.cmake
+@@ -2,9 +2,12 @@ include(FetchContent)
+ cmake_policy(SET CMP0169 OLD)
+ set(FETCHCONTENT_QUIET ON)
+ 
+-find_package(Vulkan REQUIRED COMPONENTS glslc)
++if(NOT APPLE)
++  find_package(Vulkan REQUIRED COMPONENTS glslc)
++endif()
+ find_package(Threads REQUIRED)
+ 
++set(SDL_VULKAN ON CACHE BOOL "" FORCE)
+ set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+ set(SDL_STATIC ON CACHE BOOL "" FORCE)
+ set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+@@ -21,7 +24,7 @@ FetchContent_Declare(volk GIT_REPOSITORY https://github.com/zeux/volk.git GIT_TA
+ FetchContent_Declare(vma GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
+ FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TAG 1.0.3 GIT_SHALLOW TRUE)
+ FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.92.9b-docking GIT_SHALLOW TRUE)
+-FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb.git GIT_TAG master GIT_SHALLOW TRUE)
++FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb.git GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20 GIT_SHALLOW FALSE)
+ FetchContent_Declare(lua51 URL https://www.lua.org/ftp/lua-5.1.5.tar.gz
+   URL_HASH SHA256=2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333)
+ 
+@@ -34,10 +37,17 @@ FetchContent_MakeAvailable(sdl3 zlib)
+ FetchContent_Declare(whisper URL https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.4.tar.gz
+   URL_HASH SHA256=57e280cee375ab02425b806ad5146b99f6eb9357e3c2b31357c8a6af2e2e44ae)
+ FetchContent_Populate(whisper)
+-set(PT_VOICE_DIR ${CMAKE_BINARY_DIR}/voice)
++set(PT_VOICE_DIR "${CMAKE_BINARY_DIR}/voice" CACHE PATH "Whisper model cache and runtime directory")
+ set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+-set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
+-set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
++if(APPLE)
++  set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
++  set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
++  set(GGML_METAL OFF CACHE BOOL "" FORCE)
++  set(GGML_BLAS OFF CACHE BOOL "" FORCE)
++else()
++  set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
++  set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
++endif()
+ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+ set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
+ set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+@@ -45,7 +55,11 @@ set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+ set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+ set(WHISPER_ALL_WARNINGS OFF CACHE BOOL "" FORCE)
+ set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+-set(BUILD_SHARED_LIBS ON)
++if(APPLE)
++  set(BUILD_SHARED_LIBS OFF)
++else()
++  set(BUILD_SHARED_LIBS ON)
++endif()
+ add_subdirectory(${whisper_SOURCE_DIR} ${whisper_BINARY_DIR} EXCLUDE_FROM_ALL)
+ unset(BUILD_SHARED_LIBS)
+ add_custom_target(pt_voice_runtime)
+@@ -143,7 +157,25 @@ endif()
+ 
+ file(GLOB LUA51_SOURCES ${lua51_SOURCE_DIR}/src/*.c)
+ list(FILTER LUA51_SOURCES EXCLUDE REGEX ".*/(lua|luac|print)\\.c$")
++if(PT_IOS)
++  # iOS has no child processes. Preserve Lua's other standard os functions and
++  # fail os.execute explicitly; patch a per-build copy, never the shared source.
++  list(REMOVE_ITEM LUA51_SOURCES "${lua51_SOURCE_DIR}/src/loslib.c")
++  file(READ "${lua51_SOURCE_DIR}/src/loslib.c" pt_lua_os)
++  set(pt_lua_execute "lua_pushinteger(L, system(luaL_optstring(L, 1, NULL)));")
++  string(FIND "${pt_lua_os}" "${pt_lua_execute}" pt_lua_execute_at)
++  if(pt_lua_execute_at EQUAL -1)
++    message(FATAL_ERROR "Pinned Lua os.execute source changed; review the iOS adapter")
++  endif()
++  string(REPLACE "${pt_lua_execute}" "return luaL_error(L, \"process execution is unavailable on iOS\");" pt_lua_os "${pt_lua_os}")
++  file(WRITE "${CMAKE_BINARY_DIR}/generated/lua-loslib-ios.c" "${pt_lua_os}")
++  list(APPEND LUA51_SOURCES "${CMAKE_BINARY_DIR}/generated/lua-loslib-ios.c")
++endif()
+ 
++
++if(APPLE)
++  set_source_files_properties(${volk_SOURCE_DIR}/volk.c PROPERTIES LANGUAGE CXX)
++endif()
+ add_library(pt_thirdparty STATIC
+   ${volk_SOURCE_DIR}/volk.c
+   ${imgui_SOURCE_DIR}/imgui.cpp
+@@ -163,6 +195,9 @@ target_include_directories(pt_thirdparty PUBLIC
+   ${lua51_SOURCE_DIR}/src
+   ${stb_SOURCE_DIR})
+ target_compile_definitions(pt_thirdparty PUBLIC VK_NO_PROTOTYPES IMGUI_IMPL_VULKAN_USE_VOLK)
++if(APPLE)
++  target_compile_definitions(pt_thirdparty PUBLIC VOLK_NAMESPACE VK_USE_PLATFORM_METAL_EXT)
++endif()
+ if(WIN32)
+   target_compile_definitions(pt_thirdparty PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+ endif()
+@@ -188,8 +223,13 @@ FetchContent_Populate(vorbis)
+ set(PT_WWISE_CODEBOOKS_DIR ${CMAKE_BINARY_DIR}/_deps/ww2ogg)
+ set(PT_WWISE_CODEBOOKS_BIN ${PT_WWISE_CODEBOOKS_DIR}/packed_codebooks_aoTuV_603.bin)
+ set(PT_WWISE_CODEBOOKS_C ${PT_WWISE_CODEBOOKS_DIR}/wwise_codebooks.c)
++set(PT_WWISE_CODEBOOKS_LICENSE "${PT_WWISE_CODEBOOKS_DIR}/COPYING")
++file(DOWNLOAD https://raw.githubusercontent.com/hcs64/ww2ogg/14ed9b0dd62e815a38702b5f03c57006cbe2501b/COPYING
++  "${PT_WWISE_CODEBOOKS_LICENSE}"
++  EXPECTED_HASH SHA256=0a12f3490863fa01539f500fc74a0e8efbfeb22852aac087c645fbd7362d6726)
++
+ if(NOT EXISTS ${PT_WWISE_CODEBOOKS_BIN})
+-  file(DOWNLOAD https://raw.githubusercontent.com/hcs64/ww2ogg/master/packed_codebooks_aoTuV_603.bin ${PT_WWISE_CODEBOOKS_BIN}
++  file(DOWNLOAD https://raw.githubusercontent.com/hcs64/ww2ogg/14ed9b0dd62e815a38702b5f03c57006cbe2501b/packed_codebooks_aoTuV_603.bin ${PT_WWISE_CODEBOOKS_BIN}
+     EXPECTED_HASH SHA256=00a93eab267d281401b1efd54e888a2e183299b9e6c446c48d09f701a89d9d27 STATUS pt_codebooks_status)
+   list(GET pt_codebooks_status 0 pt_codebooks_code)
+   if(NOT pt_codebooks_code EQUAL 0)
+diff --git a/cmake/Info.plist.in b/cmake/Info.plist.in
+new file mode 100644
+index 0000000..b38185b
+--- /dev/null
++++ b/cmake/Info.plist.in
+@@ -0,0 +1,18 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0"><dict>
++<key>CFBundleExecutable</key><string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
++<key>CFBundleIdentifier</key><string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
++<key>CFBundleName</key><string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
++<key>CFBundlePackageType</key><string>APPL</string>
++<key>CFBundleShortVersionString</key><string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
++<key>CFBundleVersion</key><string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
++<key>NSMicrophoneUsageDescription</key><string>P.T. uses your microphone locally for the voice puzzle. Audio is not sent to a server.</string>
++<key>UIFileSharingEnabled</key><true/>
++<key>LSSupportsOpeningDocumentsInPlace</key><true/>
++<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
++<key>UIDeviceFamily</key><array><integer>2</integer></array>
++<key>UILaunchScreen</key><dict/>
++<key>UIApplicationSupportsIndirectInputEvents</key><true/>
++<key>LSRequiresIPhoneOS</key><${PT_IOS_PLIST_VALUE}/>
++</dict></plist>
+diff --git a/src/engine/core/crash_report.cpp b/src/engine/core/crash_report.cpp
+index d37231f..403e45b 100644
+--- a/src/engine/core/crash_report.cpp
++++ b/src/engine/core/crash_report.cpp
+@@ -137,9 +137,11 @@ void FatalError(const std::string& reason, bool show_message, int code) {
+     LogError("fatal: {}", reason);
+     const std::filesystem::path dump = WriteCrashDump(reason.c_str());
+     if (show_message) {
+-        const std::string text = "P.T. stopped: " + reason + "\n\nThe log and a crash dump were written to:\n" +
+-                                 (dump.empty() ? g_dump_dir.string() : dump.parent_path().string()) +
+-                                 "\n\nPlease send pt.log and the .dmp file with your report.";
++        std::string text = "P.T. stopped: " + reason + "\n\nThe log directory is:\n" + g_dump_dir.string();
++        if (!dump.empty()) text += "\n\nCrash dump: " + dump.string();
++#if defined(__APPLE__)
++        text += "\n\nFor a system crash report, check the Apple device diagnostics.";
++#endif
+         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "P.T.", text.c_str(), nullptr);
+     }
+     LogExit(code, "fatal error");
+diff --git a/src/engine/core/memory_status.cpp b/src/engine/core/memory_status.cpp
+index 81ab3a0..cd541fd 100644
+--- a/src/engine/core/memory_status.cpp
++++ b/src/engine/core/memory_status.cpp
+@@ -3,6 +3,14 @@
+ #include <chrono>
+ #include <cstdio>
+ #include <new>
++#include <thread>
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#include <mach/mach.h>
++#if TARGET_OS_IPHONE
++#include <os/proc.h>
++#endif
++#endif
+ 
+ #include "engine/core/log.h"
+ 
+@@ -45,6 +53,13 @@ void LogMemoryStatus(const char* what, size_t bytes) {
+                   what, bytes, static_cast<unsigned long long>(process.PrivateUsage) / mb,
+                   static_cast<unsigned long long>(process.WorkingSetSize) / mb,
+                   (system.ullTotalPageFile - system.ullAvailPageFile) / mb, system.ullTotalPageFile / mb, system.ullAvailPhys / mb);
++#elif defined(__APPLE__)
++    task_vm_info_data_t vm{};
++    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
++    task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm), &count);
++    const auto available = QuerySystemMemory();
++    std::snprintf(line, sizeof(line), "memory: %s (%zu bytes): footprint %llu MB, available %.0f MB",
++                  what, bytes, static_cast<unsigned long long>(vm.phys_footprint / 1048576), available.free_physical_mb);
+ #else
+     std::snprintf(line, sizeof(line), "memory: %s (%zu bytes)", what, bytes);
+ #endif
+@@ -64,6 +79,21 @@ SystemMemory QuerySystemMemory() {
+         out.free_physical_mb = static_cast<double>(system.ullAvailPhys) / 1048576.0;
+         out.commit_headroom_mb = static_cast<double>(system.ullAvailPageFile) / 1048576.0;
+     }
++#elif defined(__APPLE__)
++#if TARGET_OS_IPHONE
++    out.free_physical_mb = out.commit_headroom_mb = static_cast<double>(os_proc_available_memory()) / 1048576.0;
++#else
++    vm_statistics64_data_t vm{};
++    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
++    vm_size_t page_size = 0;
++    const auto host = mach_host_self();
++    host_page_size(host, &page_size);
++    if (host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm), &count) == KERN_SUCCESS) {
++        out.free_physical_mb = out.commit_headroom_mb =
++            static_cast<double>(vm.free_count + vm.inactive_count) * page_size / 1048576.0;
++    }
++    mach_port_deallocate(mach_task_self(), host);
++#endif
+ #else
+     out.free_physical_mb = out.commit_headroom_mb = 1.0e9;
+ #endif
+@@ -88,9 +118,7 @@ bool WaitForFreeMemory(double free_mb, int seconds) {
+                      m.commit_headroom_mb, seconds);
+             return false;
+         }
+-#ifdef _WIN32
+-        Sleep(1000);
+-#endif
++        std::this_thread::sleep_for(std::chrono::seconds(1));
+     }
+ }
+ 
+diff --git a/src/engine/platform/apple_host.h b/src/engine/platform/apple_host.h
+new file mode 100644
+index 0000000..4143b2f
+--- /dev/null
++++ b/src/engine/platform/apple_host.h
+@@ -0,0 +1,10 @@
++#pragma once
++#include <stdbool.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++// iOS foreground state, including system permission dialogs that remove focus.
++bool pt_apple_is_active(void);
++#ifdef __cplusplus
++}
++#endif
+diff --git a/src/engine/platform/apple_host.m b/src/engine/platform/apple_host.m
+new file mode 100644
+index 0000000..3257f77
+--- /dev/null
++++ b/src/engine/platform/apple_host.m
+@@ -0,0 +1,19 @@
++#include "engine/platform/apple_host.h"
++#include <TargetConditionals.h>
++#if TARGET_OS_IPHONE
++#import <UIKit/UIKit.h>
++#import <Foundation/Foundation.h>
++
++bool pt_apple_is_active(void) {
++    if ([NSThread isMainThread]) {
++        return [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
++    }
++    __block bool active = false;
++    dispatch_sync(dispatch_get_main_queue(), ^{
++        active = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
++    });
++    return active;
++}
++#else
++bool pt_apple_is_active(void) { return true; }
++#endif
+diff --git a/src/engine/platform/apple_vulkan.cpp b/src/engine/platform/apple_vulkan.cpp
+new file mode 100644
+index 0000000..a449250
+--- /dev/null
++++ b/src/engine/platform/apple_vulkan.cpp
+@@ -0,0 +1,6 @@
++#if defined(__APPLE__)
++// Keep the real loader symbol separate from volk's namespaced function pointers.
++#include "engine/platform/apple_vulkan.h"
++extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char*);
++namespace pt { PFN_vkGetInstanceProcAddr AppleVulkanGetInstanceProcAddr() { return &vkGetInstanceProcAddr; } }
++#endif
+diff --git a/src/engine/platform/apple_vulkan.h b/src/engine/platform/apple_vulkan.h
+new file mode 100644
+index 0000000..0c190cb
+--- /dev/null
++++ b/src/engine/platform/apple_vulkan.h
+@@ -0,0 +1,3 @@
++#pragma once
++#include <vulkan/vulkan.h>
++namespace pt { PFN_vkGetInstanceProcAddr AppleVulkanGetInstanceProcAddr(); }
+diff --git a/src/engine/platform/os.cpp b/src/engine/platform/os.cpp
+index b16938a..7002a41 100644
+--- a/src/engine/platform/os.cpp
++++ b/src/engine/platform/os.cpp
+@@ -106,6 +106,9 @@ uint32_t ProcessId() { return static_cast<uint32_t>(getpid()); }
+ ProcessResult RunProcess(const std::filesystem::path& program, const std::vector<std::string>& args, const std::filesystem::path& working_dir,
+                          const std::filesystem::path& log, const std::atomic<bool>& cancel, std::chrono::milliseconds timeout) {
+     ProcessResult result;
++#if defined(PT_IOS) && PT_IOS
++    return result;
++#else
+     const int log_fd = open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+     if (log_fd < 0) return result;
+     posix_spawn_file_actions_t actions;
+@@ -142,6 +145,7 @@ ProcessResult RunProcess(const std::filesystem::path& program, const std::vector
+     }
+     result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+     return result;
++#endif
+ }
+ 
+ FileLock::FileLock(const std::filesystem::path& path) {
+diff --git a/src/engine/voice/voice_recognizer.cpp b/src/engine/voice/voice_recognizer.cpp
+index 82b37da..0a9e8f5 100644
+--- a/src/engine/voice/voice_recognizer.cpp
++++ b/src/engine/voice/voice_recognizer.cpp
+@@ -17,7 +17,11 @@
+ #else
+ #include <dlfcn.h>
+ #include <sys/resource.h>
++#if defined(__APPLE__)
++#include <pthread.h>
++#else
+ #include <sys/syscall.h>
++#endif
+ #include <unistd.h>
+ #endif
+ 
+@@ -81,6 +85,7 @@ struct WhisperApi {
+ WhisperApi g_api;
+ std::mutex g_api_mutex;
+ 
++#if !defined(PT_STATIC_WHISPER)
+ #ifdef _WIN32
+ using Library = HMODULE;
+ constexpr const char* kLibraryPrefix = "";
+@@ -106,7 +111,20 @@ std::string LoadError() {
+ 
+ std::string LibraryName(const char* name) { return std::string(kLibraryPrefix) + name + kLibraryExtension; }
+ 
++#endif
+ bool LoadRuntime(const std::filesystem::path& dir) {
++#if defined(PT_STATIC_WHISPER)
++    std::lock_guard lock(g_api_mutex);
++    if (g_api.ready) return true;
++#define PT_WHISPER_STATIC(name) g_api.name = &::name;
++    PT_WHISPER_FUNCTIONS(PT_WHISPER_STATIC)
++#undef PT_WHISPER_STATIC
++    g_api.whisper_log_set(WhisperLog, nullptr);
++    g_api.cpu = "arm64-static";
++    g_api.ready = true;
++    LogInfo("voice: statically linked Apple ARM64 whisper.cpp runtime");
++    return true;
++#else
+     std::lock_guard lock(g_api_mutex);
+     if (g_api.ready) return true;
+     const Library base = LoadNear(dir / LibraryName("ggml-base"));
+@@ -159,6 +177,7 @@ bool LoadRuntime(const std::filesystem::path& dir) {
+     g_api.ready = true;
+     LogInfo("voice: whisper.cpp CPU code ggml-cpu-{} (score {})", g_api.cpu, best_score);
+     return true;
++#endif
+ }
+ 
+ void WriteSegment(const std::filesystem::path& folder, const std::vector<float>& audio) {
+@@ -286,7 +305,11 @@ bool VoiceRecognizer::MatchesKeyword(std::string_view text, int max_words, int*
+ bool VoiceRecognizer::Init(const std::filesystem::path& model_dir, const std::string& keyword) {
+     Shutdown();
+     keyword_ = keyword;
+-    for (const std::string& name : {std::string(kWhisperModel), std::string(kVadModel), LibraryName("whisper")}) {
++    std::vector<std::string> required{std::string(kWhisperModel), std::string(kVadModel)};
++#if !defined(PT_STATIC_WHISPER)
++    required.push_back(LibraryName("whisper"));
++#endif
++    for (const std::string& name : required) {
+         if (!std::filesystem::is_regular_file(model_dir / name)) {
+             LogError("voice: {} is missing from {}", name, model_dir.string());
+             state_ = State::Failed;
+@@ -436,6 +459,8 @@ void VoiceRecognizer::FreeModels() {
+ void VoiceRecognizer::Run(std::filesystem::path model_dir) {
+ #ifdef _WIN32
+     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
++#elif defined(__APPLE__)
++    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+ #else
+     setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
+ #endif

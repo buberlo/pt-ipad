@@ -1,0 +1,552 @@
+diff --git a/src/engine/anim/anim_test.cpp b/src/engine/anim/anim_test.cpp
+index ba0c283..f123482 100644
+--- a/src/engine/anim/anim_test.cpp
++++ b/src/engine/anim/anim_test.cpp
+@@ -4,6 +4,11 @@
+ 
+ #include <algorithm>
+ #include <charconv>
++#if defined(__APPLE__)
++#include <cerrno>
++#include <cstdlib>
++#include <xlocale.h>
++#endif
+ #include <cmath>
+ #include <cstdio>
+ #include <cstring>
+@@ -170,11 +175,24 @@ private:
+             return true;
+         }
+         double d = 0.0;
++#if defined(__APPLE__)
++        // Floating from_chars is only available on macOS/iOS 26 in libc++.
++        // Parse directly from the owned, NUL-terminated buffer without copying its tail.
++        static locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
++        if (!c_locale || pos_ >= text_.size() ||
++            (text_[pos_] != '-' && (text_[pos_] < '0' || text_[pos_] > '9'))) return false;
++        char* end = nullptr;
++        errno = 0;
++        d = strtod_l(text_.c_str() + pos_, &end, c_locale);
++        if (end == text_.c_str() + pos_ || errno == ERANGE || !std::isfinite(d)) return false;
++        pos_ = static_cast<size_t>(end - text_.c_str());
++#else
+         const auto result = std::from_chars(text_.data() + pos_, text_.data() + text_.size(), d);
+         if (result.ec != std::errc()) {
+             return false;
+         }
+         pos_ = static_cast<size_t>(result.ptr - text_.data());
++#endif
+         out.type = Number;
+         std::memcpy(&out.data, &d, 8);
+         return true;
+diff --git a/src/engine/audio/sound_engine.cpp b/src/engine/audio/sound_engine.cpp
+index bf5490e..b82890c 100644
+--- a/src/engine/audio/sound_engine.cpp
++++ b/src/engine/audio/sound_engine.cpp
+@@ -1,7 +1,8 @@
+ #include "engine/audio/sound_engine.h"
+ 
+-#include <pmmintrin.h>
++#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+ #include <xmmintrin.h>
++#endif
+ 
+ #include <algorithm>
+ #include <bit>
+@@ -3501,8 +3502,15 @@ void SoundEngine::Render(float* out, uint32_t frames) {
+         motion_levels_.store(0, std::memory_order_relaxed);
+         return;
+     }
++#if defined(__aarch64__)
++    uint64_t fpcr;
++    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
++    const uint64_t flush_to_zero = fpcr | (uint64_t{1} << 24);
++    __asm__ volatile("msr fpcr, %0" : : "r"(flush_to_zero));
++#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+     const unsigned int csr = _mm_getcsr();
+     _mm_setcsr(csr | 0x8040);
++#endif
+     {
+         std::lock_guard lock(command_mutex_);
+         command_work_.swap(commands_);
+@@ -3555,7 +3563,11 @@ void SoundEngine::Render(float* out, uint32_t frames) {
+         stats_.sequencers = static_cast<uint32_t>(sequencers_.size());
+         stats_.music = static_cast<uint32_t>(music_.size());
+     }
++#if defined(__aarch64__)
++    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
++#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+     _mm_setcsr(csr);
++#endif
+ }
+ 
+ }
+diff --git a/src/engine/platform/input.cpp b/src/engine/platform/input.cpp
+index 522df55..de99a53 100644
+--- a/src/engine/platform/input.cpp
++++ b/src/engine/platform/input.cpp
+@@ -439,6 +439,20 @@ glm::vec2 InputDevice::Stick(const Pad& pad, int x_axis, int y_axis) const {
+ 
+ void InputDevice::ProcessEvent(const SDL_Event& event) {
+     switch (event.type) {
++    case SDL_EVENT_FINGER_DOWN:
++        if (touch_enabled_) touch_.Down(event.tfinger.fingerID, event.tfinger.x, event.tfinger.y);
++        break;
++    case SDL_EVENT_FINGER_MOTION:
++        if (touch_enabled_) touch_.Motion(event.tfinger.fingerID, event.tfinger.x, event.tfinger.y);
++        break;
++    case SDL_EVENT_FINGER_UP:
++    case SDL_EVENT_FINGER_CANCELED:
++        if (touch_enabled_) touch_.Up(event.tfinger.fingerID);
++        break;
++    case SDL_EVENT_WILL_ENTER_BACKGROUND:
++    case SDL_EVENT_WINDOW_FOCUS_LOST:
++        ResetTransient();
++        break;
+     case SDL_EVENT_GAMEPAD_ADDED:
+         Open(event.gdevice.which);
+         if (const Pad* pad = Find(event.gdevice.which)) {
+@@ -510,6 +524,17 @@ void InputDevice::ProcessEvent(const SDL_Event& event) {
+     }
+ }
+ 
++void InputDevice::ResetTransient() {
++    touch_.Reset();
++    mouse_dx_ = mouse_dy_ = mouse_travel_ = 0;
++    previous_held_ = previous_raw_ = injected_mouse_ = 0;
++    previous_gouge_key_ = previous_house_key_ = false;
++    pause_edge_ = confirm_edge_ = cancel_edge_ = click_edge_ = right_click_edge_ = settings_edge_ = any_edge_ = false;
++    std::fill(injected_keys_.begin(), injected_keys_.end(), false);
++    for (auto& pad : pads_) { pad.event_raw = 0; pad.previous_gouge = 0; }
++    SetRumble(0, 0);
++}
++
+ void InputDevice::InjectKey(uint32_t scancode, bool down) {
+     if (scancode == SDL_SCANCODE_UNKNOWN || scancode >= SDL_SCANCODE_COUNT) {
+         return;
+@@ -650,6 +675,27 @@ InputState InputDevice::Poll(bool keyboard_free, MouseUse mouse, bool pads_free)
+     if (pad_raw) {
+         state.from_gamepad = true;
+     }
++    const TouchControls::State touch = touch_enabled_ ? touch_.Poll() : TouchControls::State{};
++    if (touch_enabled_ && pads_free) {
++        const glm::vec2 touch_move(touch.move_x, touch.move_y);
++        if (glm::length(touch_move) > glm::length(state.left_stick)) {
++            state.left_stick = touch_move;
++            state.left_stick_from_pad = true;
++        }
++        if (mouse == MouseUse::Look) state.mouse_look += glm::vec2(touch.look_x, touch.look_y) * 2.5f;
++        if (mouse == MouseUse::Menu) {
++            if (touch.move_x > .5f) raw |= kRawRight;
++            if (touch.move_x < -.5f) raw |= kRawLeft;
++            if (touch.move_y > .5f) raw |= kRawUp;
++            if (touch.move_y < -.5f) raw |= kRawDown;
++        }
++        if (touch.interact || touch.interact_pressed) raw |= kRawCross;
++        if (touch.zoom) raw |= kRawR3;
++        if (touch.back) raw |= kRawCircle;
++        state.gouge_pressed |= touch.interact_pressed;
++        pause_edge_ |= touch.pause;
++        any_edge_ |= touch.any;
++    }
+     raw |= pad_raw;
+     state.raw_held = raw;
+     state.raw_pressed = raw & ~previous_raw_;
+diff --git a/src/engine/platform/input.h b/src/engine/platform/input.h
+index c5feaf1..50078d1 100644
+--- a/src/engine/platform/input.h
++++ b/src/engine/platform/input.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <glm/glm.hpp>
++#include "engine/platform/touch_controls.h"
+ 
+ #include <array>
+ #include <cstdint>
+@@ -148,6 +149,10 @@ public:
+     void InjectKey(uint32_t scancode, bool down);
+     void InjectMouseButton(uint8_t button, bool down);
+ 
++    void ResetTransient();
++    void EnableTouch(bool enabled) { touch_enabled_ = enabled; touch_.Reset(); }
++    void SetTouchAspect(float aspect) { touch_.SetAspect(aspect); }
++
+     InputSettings settings;
+ 
+ private:
+@@ -169,6 +174,8 @@ private:
+     glm::vec2 Stick(const Pad& pad, int x_axis, int y_axis) const;
+     void UpdateRumble();
+ 
++    bool touch_enabled_ = false;
++    TouchControls touch_;
+     std::vector<Pad> pads_;
+     uint64_t use_counter_ = 0;
+     float mouse_dx_ = 0.0f;
+diff --git a/src/engine/platform/touch_controls.h b/src/engine/platform/touch_controls.h
+new file mode 100644
+index 0000000..978c15e
+--- /dev/null
++++ b/src/engine/platform/touch_controls.h
+@@ -0,0 +1,92 @@
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdint>
++
++namespace pt {
++
++// Normalized coordinates keep the interaction model independent of SDL and pixel density.
++// Each finger owns its original control until release; sliding cannot press a second button.
++class TouchControls {
++public:
++    enum class Control { None, Move, Look, Interact, Zoom, Pause, Back };
++    struct Button { Control control; float x, y, radius; const char* label; };
++    static constexpr std::array<Button, 4> buttons{{
++        {Control::Interact, .90f, .72f, .065f, "Interact"},
++        {Control::Zoom, .77f, .85f, .060f, "Zoom"},
++        {Control::Pause, .92f, .10f, .045f, "Pause"},
++        {Control::Back, .77f, .10f, .045f, "Back"},
++    }};
++    struct State {
++        float move_x = 0, move_y = 0, look_x = 0, look_y = 0;
++        bool interact = false, zoom = false, interact_pressed = false;
++        bool pause = false, back = false, any = false;
++    };
++
++    void Down(uint64_t id, float x, float y) {
++        if (!Finite(x, y) || Find(id)) return;
++        auto slot = std::find_if(fingers_.begin(), fingers_.end(), [](const Finger& f) { return !f.used; });
++        if (slot == fingers_.end()) return;
++        Control control = Control::None;
++        for (const auto& b : buttons) {
++            if (std::hypot((x - b.x) * aspect_, y - b.y) <= b.radius) {
++                control = b.control;
++                break;
++            }
++        }
++        if (control == Control::None) control = x < .45f ? Control::Move : Control::Look;
++        if (std::any_of(fingers_.begin(), fingers_.end(), [control](const Finger& f) { return f.used && f.control == control; })) return;
++        *slot = {true, id, control, x, y, x, y};
++        edges_.any = true;
++        edges_.interact_pressed |= control == Control::Interact;
++        edges_.pause |= control == Control::Pause;
++        edges_.back |= control == Control::Back;
++    }
++    void Motion(uint64_t id, float x, float y) {
++        Finger* f = Find(id);
++        if (!f || !Finite(x, y)) return;
++        if (f->control == Control::Look) {
++            edges_.look_x += (x - f->x) * aspect_;
++            edges_.look_y += y - f->y;
++        }
++        f->x = x; f->y = y;
++    }
++    void Up(uint64_t id) { if (auto* f = Find(id)) *f = {}; }
++    void Reset() { fingers_ = {}; edges_ = {}; }
++    void SetAspect(float aspect) { if (std::isfinite(aspect) && aspect > 0) aspect_ = aspect; }
++    State Poll() {
++        State result = edges_;
++        edges_ = {};
++        for (const auto& f : fingers_) {
++            if (!f.used) continue;
++            if (f.control == Control::Move) {
++                float x = (f.x - f.start_x) * aspect_ / .13f;
++                float y = (f.start_y - f.y) / .13f;
++                const float length = std::hypot(x, y);
++                if (length > .12f) {
++                    const float scale = std::min(1.f, (length - .12f) / .88f) / length;
++                    result.move_x = x * scale; result.move_y = y * scale;
++                }
++            }
++            result.interact |= f.control == Control::Interact;
++            result.zoom |= f.control == Control::Zoom;
++        }
++        return result;
++    }
++private:
++    struct Finger {
++        bool used = false; uint64_t id = 0; Control control = Control::None;
++        float start_x = 0, start_y = 0, x = 0, y = 0;
++    };
++    static bool Finite(float x, float y) { return std::isfinite(x) && std::isfinite(y); }
++    Finger* Find(uint64_t id) {
++        for (auto& f : fingers_) if (f.used && f.id == id) return &f;
++        return nullptr;
++    }
++    std::array<Finger, 10> fingers_{};
++    State edges_{};
++    float aspect_ = 16.f / 9.f;
++};
++}
+diff --git a/src/engine/platform/update_check.cpp b/src/engine/platform/update_check.cpp
+index 728609e..0fb2d73 100644
+--- a/src/engine/platform/update_check.cpp
++++ b/src/engine/platform/update_check.cpp
+@@ -133,6 +133,10 @@ std::string_view CurrentVersion() { return PT_VERSION; }
+ std::string_view Platform() {
+ #ifdef _WIN32
+     return "windows";
++#elif PT_IOS
++    return "ios-arm64";
++#elif defined(__APPLE__)
++    return "macos-arm64";
+ #else
+     return "linux";
+ #endif
+diff --git a/src/main.cpp b/src/main.cpp
+index c2d236e..3be7178 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,6 +1,12 @@
+ #include <SDL3/SDL.h>
++#ifndef PT_IOS
++#define PT_IOS 0
++#endif
+ #include <SDL3/SDL_main.h>
+ #include "engine/platform/update_check.h"
++#if defined(__APPLE__)
++#include "engine/platform/apple_host.h"
++#endif
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+@@ -560,6 +566,7 @@ void WriteWav(const std::filesystem::path& path, const std::vector<float>& sampl
+ }
+ 
+ struct App {
++    bool mobile_active = true;
+     Options options;
+     pt::AppSettings settings;
+     pt::update::Checker updates;
+@@ -683,6 +690,16 @@ std::filesystem::path RememberedGameDirFile() {
+ }
+ 
+ std::filesystem::path FindGameDir(const Options& options) {
++#if PT_IOS
++    // User-supplied data lives in Documents; application resources remain immutable.
++    if (!options.game_dir_given) {
++        const char* documents = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
++        if (documents) {
++            const auto installed = std::filesystem::path(documents) / "CUSA01127";
++            if (LooksLikeGameDir(installed)) return installed;
++        }
++    }
++#endif
+     if (options.game_dir_given || LooksLikeGameDir(options.game_dir)) {
+         return options.game_dir;
+     }
+@@ -2811,6 +2828,21 @@ bool PumpEvents(App& app, pt::InputDevice* input, bool& running) {
+         if (input) {
+             input->ProcessEvent(event);
+         }
++#if PT_IOS
++        if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
++            if (app.mobile_active && app.renderer.Context().device) vkDeviceWaitIdle(app.renderer.Context().device);
++            app.renderer.Context().ResetDisplayTiming();
++            app.mobile_active = false;
++            if (input) input->ResetTransient();
++        } else if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
++            app.mobile_active = true;
++            app.renderer.Context().ResetDisplayTiming();
++            int width = 0, height = 0;
++            SDL_GetWindowSizeInPixels(app.window, &width, &height);
++            if (width > 0 && height > 0) app.renderer.Resize(width, height);
++            if (input) input->ResetTransient();
++        }
++#endif
+         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+             if (running) {
+                 pt::LogInfo("window: {}", event.type == SDL_EVENT_QUIT ? "quit requested (window closed, Alt+F4 or the system)" : "close requested");
+@@ -2826,7 +2858,11 @@ bool PumpEvents(App& app, pt::InputDevice* input, bool& running) {
+             app.renderer.Resize(static_cast<uint32_t>(event.window.data1), static_cast<uint32_t>(event.window.data2));
+         }
+     }
+-    if (SDL_GetWindowFlags(app.window) & SDL_WINDOW_MINIMIZED) {
++    bool active = app.mobile_active;
++#if PT_IOS
++    active = active && pt_apple_is_active();
++#endif
++    if (!active || (SDL_GetWindowFlags(app.window) & SDL_WINDOW_MINIMIZED)) {
+         SDL_Delay(16);
+         return false;
+     }
+@@ -3069,6 +3105,7 @@ int RunGame(App& app, pt::Vfs& vfs) {
+     const bool pads = app.window || options.virtual_pads;
+     if (pads) {
+         input.Init();
++    input.EnableTouch(PT_IOS);
+     }
+     if (app.window) {
+         ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoAll);
+@@ -3384,6 +3421,8 @@ int RunGame(App& app, pt::Vfs& vfs) {
+             }
+         }
+         if (!visible || frozen) {
++            pending_input = {};
++            accumulator = 0.0f;
+             input.SetRumble(0, 0);
+             microphone.Close();
+             if (recognizer) recognizer->Reset();
+@@ -3415,7 +3454,7 @@ int RunGame(App& app, pt::Vfs& vfs) {
+             }
+             tab_was_down = keys[SDL_SCANCODE_TAB];
+             const bool photo_pointer = photo_mode && photo_overlay && !(SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_RMASK);
+-            const bool want_capture = !show_debug && !show_settings && !(ui_ready && ui.MenuOpen()) && !photo_pointer && !vr &&
++            const bool want_capture = !PT_IOS && !show_debug && !show_settings && !(ui_ready && ui.MenuOpen()) && !photo_pointer && !vr &&
+                                       (SDL_GetWindowFlags(app.window) & SDL_WINDOW_INPUT_FOCUS);
+             if (want_capture != mouse_captured) {
+                 SDL_SetWindowRelativeMouseMode(app.window, want_capture);
+@@ -3424,9 +3463,15 @@ int RunGame(App& app, pt::Vfs& vfs) {
+         }
+         const bool keyboard_free = app.window && !show_settings && !(show_debug && ImGui::GetIO().WantCaptureKeyboard);
+         const bool menu_open = ui_ready && ui.MenuOpen();
+-        const pt::MouseUse mouse_use = mouse_captured || (!app.window && !menu_open) ? pt::MouseUse::Look
++        pt::MouseUse mouse_use = mouse_captured || (!app.window && !menu_open) ? pt::MouseUse::Look
+                                        : menu_open && !show_settings                   ? pt::MouseUse::Menu
+                                                                                        : pt::MouseUse::None;
++#if PT_IOS
++        mouse_use = show_settings ? pt::MouseUse::None : menu_open ? pt::MouseUse::Menu : pt::MouseUse::Look;
++        int touch_w = 0, touch_h = 0;
++        if (app.window && SDL_GetWindowSize(app.window, &touch_w, &touch_h) && touch_h > 0)
++            input.SetTouchAspect(static_cast<float>(touch_w) / touch_h);
++#endif
+         pt::InputState polled = pads ? input.Poll(keyboard_free, mouse_use, !show_settings) : pt::InputState{};
+         if (options.forced_prompts) {
+             polled.prompts = *options.forced_prompts;
+@@ -3461,7 +3506,7 @@ int RunGame(App& app, pt::Vfs& vfs) {
+         pending_input.right_click = pending_input.right_click || polled.right_click;
+         pending_input.house_pressed = pending_input.house_pressed || polled.house_pressed;
+         pending_input.pointer_valid = false;
+-        if (app.window && !mouse_captured) {
++        if (app.window && !mouse_captured && !PT_IOS) {
+             float x = 0.0f;
+             float y = 0.0f;
+             SDL_GetMouseState(&x, &y);
+@@ -3911,6 +3956,21 @@ int RunGame(App& app, pt::Vfs& vfs) {
+             if (show_settings) {
+                 DrawSettingsWindow(app, input, sound, game);
+             }
++#if PT_IOS
++            {
++                const ImVec2 size = ImGui::GetIO().DisplaySize;
++                auto* draw = ImGui::GetForegroundDrawList();
++                for (const auto& button : pt::TouchControls::buttons) {
++                    const ImVec2 center(button.x * size.x, button.y * size.y);
++                    draw->AddCircleFilled(center, button.radius * size.y, IM_COL32(0, 0, 0, 80));
++                    draw->AddCircle(center, button.radius * size.y, IM_COL32(255, 255, 255, 110));
++                    const ImVec2 label = ImGui::CalcTextSize(button.label);
++                    draw->AddText(ImVec2(center.x - label.x * .5f, center.y - label.y * .5f), IM_COL32(255,255,255,190), button.label);
++                }
++                draw->AddCircle(ImVec2(.17f * size.x, .78f * size.y), .13f * size.y, IM_COL32(255,255,255,75));
++                draw->AddText(ImVec2(.13f * size.x, .78f * size.y), IM_COL32(255,255,255,120), "Move");
++            }
++#endif
+             ImGui::Render();
+         }
+         if (photo_mode) {
+@@ -4293,6 +4353,16 @@ int main(int argc, char** argv) {
+ #endif
+     App app;
+     app.options = ParseOptions(argc, argv);
++#if defined(PT_NETWORK_UPDATES) && !PT_NETWORK_UPDATES
++    app.options.no_update_check = true;
++#endif
++#if PT_IOS
++    app.options.no_update_check = true;
++    app.options.no_vr = true;
++    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
++    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
++    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
++#endif
+     if (!app.options.make_loop_previews.empty()) {
+         SetUpLoopPreviewRun(app.options);
+     }
+@@ -4409,6 +4479,17 @@ int main(int argc, char** argv) {
+         if (!app.settings_path.empty() && !pt::LoadAppSettings(app.settings_path, app.settings)) {
+             pt::SaveAppSettings(app.settings_path, app.settings);
+         }
++#if PT_IOS
++        app.settings.network.check_updates = false;
++        app.settings.display.fps_limit = 30;
++        app.settings.display.width = 1920;
++        app.settings.display.height = 1080;
++        app.settings.display.fullscreen = 1;
++        app.settings.display.pause_on_focus_loss = true;
++        app.settings.display.mute_in_background = true;
++        app.settings.graphics.enhanced_textures = false;
++        app.settings.vr.enabled = false;
++#endif
+         if (app.settings.network.check_updates && !options.no_update_check) {
+             app.updates.Start();
+         }
+@@ -4466,6 +4547,18 @@ int main(int argc, char** argv) {
+     app.streamline_marker = StartStreamline(app);
+     int result = 1;
+     const bool test_device_lost = std::getenv("PT_TEST_CRASH") && std::string(std::getenv("PT_TEST_CRASH")) == "devicelost";
++#if PT_IOS
++    app.renderer.SetRenderExtent({1920, 1080});
++    const uint64_t foreground_deadline = SDL_GetTicks() + 30000;
++    while (!pt_apple_is_active() && SDL_GetTicks() < foreground_deadline) {
++        SDL_PumpEvents();
++        SDL_Delay(16);
++    }
++    if (!pt_apple_is_active()) {
++        pt::LogError("iPad startup requires the application to be active in the foreground");
++        return 75;
++    }
++#endif
+     const bool renderer_ready = app.renderer.Init(app.window, settings);
+     if (renderer_ready && test_device_lost) {
+         app.renderer.Context().CheckDeviceLost(VK_ERROR_DEVICE_LOST, "PT_TEST_CRASH");
+diff --git a/tests/ipad_input_test.cpp b/tests/ipad_input_test.cpp
+new file mode 100644
+index 0000000..bb671f5
+--- /dev/null
++++ b/tests/ipad_input_test.cpp
+@@ -0,0 +1,42 @@
++#include <SDL3/SDL.h>
++#include "engine/platform/input.h"
++#include "game/ui/options_menu.h"
++#include <cstdio>
++
++int main() {
++    if (!SDL_Init(SDL_INIT_EVENTS)) return 1;
++    pt::InputDevice input;
++    input.EnableTouch(true);
++    auto finger = [&](SDL_EventType type, float x, float y) {
++        SDL_Event e{};
++        e.type = type; e.tfinger.fingerID = 1; e.tfinger.x = x; e.tfinger.y = y;
++        input.ProcessEvent(e);
++    };
++    int failed = 0;
++    auto expect = [&](bool value, const char* name) {
++        if (!value) { std::fprintf(stderr, "FAIL %s\n", name); ++failed; }
++    };
++    finger(SDL_EVENT_FINGER_DOWN, .90f, .72f);
++    finger(SDL_EVENT_FINGER_UP, .90f, .72f);
++    auto state = input.Poll(false, pt::MouseUse::Menu);
++    auto menu = pt::game::MapMenuInput(state, 0);
++    expect(menu.accept && menu.open_pc, "touch opens settings through controller action");
++    expect(!menu.toggle_vertical && !menu.toggle_horizontal, "interact does not change camera inversion");
++    expect(state.gouge_pressed, "interact supplies original cross-button gouge action");
++    input.Poll(false, pt::MouseUse::Menu);
++    finger(SDL_EVENT_FINGER_DOWN, .77f, .10f);
++    finger(SDL_EVENT_FINGER_UP, .77f, .10f);
++    menu = pt::game::MapMenuInput(input.Poll(false, pt::MouseUse::Menu), 0);
++    expect(menu.back && !menu.toggle_horizontal, "back does not change camera inversion");
++    finger(SDL_EVENT_FINGER_DOWN, .90f, .72f);
++    SDL_Event background{}; background.type = SDL_EVENT_WILL_ENTER_BACKGROUND;
++    input.ProcessEvent(background);
++    state = input.Poll(false, pt::MouseUse::Look);
++    expect(state.raw_held == 0 && state.raw_pressed == 0 && !state.any_button, "background cancels touch edges and holds");
++    input.EnableTouch(false);
++    finger(SDL_EVENT_FINGER_DOWN, .90f, .72f);
++    state = input.Poll(false, pt::MouseUse::Look);
++    expect(state.raw_held == 0 && !state.any_button, "disabled touch does not affect desktop input");
++    SDL_Quit();
++    return failed ? 1 : 0;
++}

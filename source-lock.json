@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "pt_pc": {
+    "url": "https://github.com/LoreanXavier/pt-pc.git",
+    "commit": "5c6307886f4470d8391bf49445a7c9124ea9d623",
+    "tag": "v1.0.1"
+  },
+  "madeira_anyps5_reference": "23b07dc63a7ac90b751550e2bfdccb92c3fe7937",
+  "moltenvk_target": "fae55a18779ee59da2cc5373a367a0282779c171"
+}
