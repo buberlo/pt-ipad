@@ -4,12 +4,12 @@ Inspected on 2026-10-08. The chosen runtime is the native C++ source port, not t
 
 ## Sources and boundaries
 
-| Source | Exact inspected pin / local path | Decision |
+| Source | Exact inspected pin | Decision |
 | --- | --- | --- |
-| Madeira/AnyPS5 | `23b07dc63a7ac90b751550e2bfdccb92c3fe7937`; `a local checkout of buberlo/madeira-anyps5` (origin renamed to `buberlo/madeira-anyps5`) | Reuse the four expressly MIT native GPU probe files and verified integration lessons. Active changes in the original checkout were not copied. |
-| Penta | `d095299cc86baafce3bd22dab1f658b3920daa53`; `a local checkout of buberlo/penta` | Reference importer, separate saves and displayed-frame measurement designs. Its GPL-3.0-or-later Swift/Wine implementation is not included. |
-| MoltenVK target | `fae55a18779ee59da2cc5373a367a0282779c171`; source checkout `a local MoltenVK checkout (upstreams/MoltenVK)` | Apache-2.0 native Vulkan-to-Metal runtime. Actual builds record which archive they used; a host Homebrew test is not proof for the pinned iPad archive. |
-| Older Madeira workspace | `a local checkout of the older Madeira workspace` (root had no committed HEAD) | Shared iPad lease coordination remains relevant; do not treat the workspace as a reproducible source revision. |
+| Madeira/AnyPS5 | `23b07dc63a7ac90b751550e2bfdccb92c3fe7937`; a local checkout of buberlo/madeira-anyps5 | Reuse the four expressly MIT native GPU probe files and verified integration lessons. Active changes in the original checkout were not copied. |
+| Penta | `d095299cc86baafce3bd22dab1f658b3920daa53`; a local checkout of buberlo/penta | Reference importer, separate saves and displayed-frame measurement designs. Its GPL-3.0-or-later Swift/Wine implementation is not included. |
+| MoltenVK target | `fae55a18779ee59da2cc5373a367a0282779c171`; the MoltenVK checkout inside a local madeira-anyps5 tree (`upstreams/MoltenVK`) | Apache-2.0 native Vulkan-to-Metal runtime. Actual builds record which archive they used; a host Homebrew test is not proof for the pinned iPad archive. |
+| Older Madeira workspace | a local checkout of the older Madeira workspace (that root had no committed HEAD) | Shared iPad lease coordination remains relevant; do not treat the workspace as a reproducible source revision. |
 
 ## Reuse versus replacement
 

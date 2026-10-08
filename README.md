@@ -38,7 +38,7 @@ See [local build and signing instructions](docs/BUILD.md) for Xcode, native depe
 
 ## Game data
 
-**No P.T. game package or extracted game content is included.** You must supply the original assets separately. The dataset verified during development is the US **CUSA01127 v01.00** release. Do not assume that an arbitrary package can be extracted or that another release is compatible.
+**No P.T. game package or extracted game content is included.** You must supply the original assets separately from your own legally obtained copy. The dataset verified during development is the US **CUSA01127 v01.00** release. Do not assume that an arbitrary package can be extracted or that another release is compatible.
 
 - [Asset verification](docs/ASSET_STATUS.md)
 - [Verified installation and separate saves](docs/ASSET_INSTALLATION.md)

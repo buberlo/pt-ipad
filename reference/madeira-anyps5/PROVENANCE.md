@@ -4,7 +4,7 @@ These four files are an unmodified reference subset, **not an integrated or runn
 
 - Source repository: [buberlo/madeira-anyps5](https://github.com/buberlo/madeira-anyps5).
 - Source commit: `23b07dc63a7ac90b751550e2bfdccb92c3fe7937`.
-- Audited local checkout: `a local checkout of buberlo/madeira-anyps5`.
+- Audited local checkout: a local checkout of buberlo/madeira-anyps5.
 - Export date: 2026-10-08.
 - License: MIT; each copied source header explicitly states `SPDX-License-Identifier: MIT` and `Copyright (C) 2026 buberlo`.
 - The committed [NOTICE](https://github.com/buberlo/madeira-anyps5/blob/23b07dc63a7ac90b751550e2bfdccb92c3fe7937/NOTICE) explicitly identifies these exact four files as MIT. The committed [LICENSE](https://github.com/buberlo/madeira-anyps5/blob/23b07dc63a7ac90b751550e2bfdccb92c3fe7937/LICENSE) excludes files with their own SPDX identifiers from its general GPL grant. The root GPL license has **not** been copied as the license for this subset. The adjacent [LICENSE](LICENSE) supplies the standard MIT text here; it is an added license document, not a byte-for-byte upstream file.
